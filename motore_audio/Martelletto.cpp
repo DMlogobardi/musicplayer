@@ -1,29 +1,34 @@
 #include "Martelletto.hpp"
 #include <stdexcept>
 #include <cmath>
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
+#include <algorithm>
 
 Martelletto::Martelletto() 
-    : id(-1), nota(0.0f), volume(0.0f), stato(StatoMartelletto::IDLE), indice_lettura(0) {}
+    : id(-1), nota_colpita(nullptr), guadagno_velocity(0.0f), stato(StatoMartelletto::IDLE), indice_lettura(0) {}
 
 // --- GETTER ---
 int Martelletto::getId() const {
     return id;
 }
 
-float Martelletto::getNota() const {
-    return nota;
+float Martelletto::getGuadagno_velocity() const {
+    return guadagno_velocity;
 }
 
-float Martelletto::getVolume() const {
-    return volume;
+float Martelletto::getInviluppo() const {
+    return inviluppo;
 }
 
 Martelletto::StatoMartelletto Martelletto::getStato() const {
     return stato;
+}
+
+const NotaData* Martelletto::getNota() const {
+    return nota_colpita;
+}
+
+float Martelletto::getVolume() const {
+    return inviluppo * guadagno_velocity;
 }
 
 bool Martelletto::eLibero() const {
@@ -38,61 +43,98 @@ void Martelletto::setId(int newId) {
     id = newId;
 }
 
-void Martelletto::setNota(float newNota) {
-    if(newNota < 0.0f) {
-        throw std::invalid_argument("Nota must be non-negative");
+void Martelletto::configura(int sampleRate) {
+    if(sampleRate <= 0) {
+        throw std::invalid_argument("Sample rate must be positive");
     }
-    nota = newNota;
+    sample_rate = sampleRate;
+    lunghezza_fade = static_cast<unsigned long long>(0.005 * sample_rate); // 5ms fade-out
+
+    durata_declick = static_cast<unsigned long long>(0.002 * sample_rate); 
 }
 
-void Martelletto::setVolume(float newVolume) {
-    if(newVolume < 0.0f || newVolume > 1.0f) {
-        throw std::invalid_argument("Volume must be between 0.0 and 1.0");
+void Martelletto::colpisci(const NotaData* nota, float velocity) {
+    if (nota == nullptr) {
+        return; // Non armare il martelletto se la nota non esiste!
     }
-    volume = newVolume;
-}
+    if (std::isnan(velocity) || velocity <= 0.0f) {
+        return; // Non armare il martelletto se la velocity è nulla o negativa!
+    }
 
-void Martelletto::setStato(StatoMartelletto newStato) {
-    stato = newStato;
-}
+    if (stato != StatoMartelletto::IDLE) {
+        valore_residuo_pop = ultimo_campione_uscita;
+        campioni_declick = durata_declick;
+    } else {
+        valore_residuo_pop = 0.0f;
+        campioni_declick = 0;
+    }
 
-void Martelletto::colpisci(float nuovaNota, float volumeIniziale) {
-    nota = nuovaNota;
-    volume = volumeIniziale;
+    nota_colpita = nota;
+
+    float v_clamped = std::min(velocity, 1.0f);
+    float v_out = std::pow(v_clamped, 2.0f); // Applichiamo una curva di risposta quadratica per la velocity
+
+    guadagno_velocity = v_out;
+
+
     stato = StatoMartelletto::IN_PERCUSSIONE;
     
+    inviluppo = 1.0f; // Reset dell'inviluppo per la nuova nota
     // Reset REALE della posizione del tempo per QUESTO specifico martelletto
     indice_lettura = 0; 
 }
 
-void Martelletto::rilascia() {
+void Martelletto::rilascia(float tau) {
     if (stato == StatoMartelletto::IN_PERCUSSIONE) {
+        if(tau < 0.001f) {
+            tau = 0.001f;
+        }
+        coef_rilascio = std::exp(-1.0f / (tau * sample_rate));
         stato = StatoMartelletto::IN_SMORZAMENTO;
     }
 }
 
-float Martelletto::suona(int sampleRate) {
-    if (stato == StatoMartelletto::IDLE) {
+float Martelletto::suona() {
+    if (stato == StatoMartelletto::IDLE || nota_colpita == nullptr) {
         return 0.0f;
     }
 
-    double t = static_cast<double>(indice_lettura) / static_cast<double>(sampleRate);
+    if (indice_lettura >= nota_colpita->buffer_campioni.size()) {
+        stato = StatoMartelletto::IDLE;
+        nota_colpita = nullptr;
+        indice_lettura = 0;
+        return 0.0f;
+    }
 
-    float campione_base = std::sin(2.0 * M_PI * nota * t);
+    float campione_base = nota_colpita->buffer_campioni[indice_lettura];
+    unsigned long long restanti = nota_colpita->buffer_campioni.size() - indice_lettura;
+    if (restanti < lunghezza_fade) {
+        float fade_factor = static_cast<float>(restanti) / static_cast<float>(lunghezza_fade);
+        campione_base *= fade_factor;
+    }
 
     indice_lettura++;
 
-    if (stato == StatoMartelletto::IN_PERCUSSIONE) {
-        volume *= 0.99995f; // Decadimento naturale della corda
-    } else if (stato == StatoMartelletto::IN_SMORZAMENTO) {
-        volume *= 0.995f;   // Decadimento rapido (smorzatore in feltro)
+    if (stato == StatoMartelletto::IN_SMORZAMENTO) {
+        inviluppo *= coef_rilascio;   // Decadimento rapido (smorzatore in feltro)
     }
 
-    if (volume < 0.001f) {
-        volume = 0.0f;
+    if (inviluppo < 0.001f) {
+        inviluppo = 0.0f;
         stato = StatoMartelletto::IDLE;
+        nota_colpita = nullptr;
         indice_lettura = 0;
     }
 
-    return campione_base * volume;
+    float uscita_corrente = campione_base * guadagno_velocity * inviluppo;
+
+    if (campioni_declick > 0) {
+        float fattore_declick = static_cast<float>(campioni_declick) / static_cast<float>(durata_declick);
+        uscita_corrente += (valore_residuo_pop * fattore_declick);
+        campioni_declick--;
+    }
+
+    ultimo_campione_uscita = uscita_corrente;
+
+    return uscita_corrente;
 }
