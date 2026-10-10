@@ -20,6 +20,7 @@ class HammerOrchestrator {
         void rilasciaTutto();
 
         float suonaSingoloCampione();
+        void suonaCampioneStereo(float& outL, float& outR);
         void processaBlocco(float* outputBuffer, size_t numeroFrame);
 
         size_t getNumeroVoci() const;
@@ -49,6 +50,8 @@ class HammerOrchestrator {
         void eseguiNoteOffInterno(size_t indiceNota);
         void eseguiRilasciaTuttoInterno();
         size_t trovaMartellettoDaRubare();
+
+        float calcolaPanDaFrequenza(float frequenza) const;
 };
 
 #endif // HAMMERORCHESTRATOR_HPP

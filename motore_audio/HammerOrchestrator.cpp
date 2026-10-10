@@ -1,6 +1,8 @@
 #include "HammerOrchestrator.hpp"
 #include <stdexcept>
 #include <cmath>
+#include <algorithm>
+
 
 HammerOrchestrator::HammerOrchestrator(const Dischetto* dischetto, int sampleRateStream, int numeroCanali)
     : dischetto_riferimento(dischetto), sample_rate(sampleRateStream), numeroCanali(numeroCanali), free_top(MAX_VOCI) {
@@ -70,7 +72,6 @@ size_t HammerOrchestrator::trovaMartellettoDaRubare() {
     return indice_scelto;
 }
 
-
 void HammerOrchestrator::eseguiNoteOnInterno(size_t indiceNota, float velocity) {
     if (dischetto_riferimento == nullptr) return;
 
@@ -128,9 +129,59 @@ float HammerOrchestrator::suonaSingoloCampione() {
 
     somma *= guadagno_master.load(std::memory_order_relaxed);
 
-    somma = std::tanh(somma); // Soft clipping per evitare distorsioni digitali indesiderate
+    // Clipping soft con tanh per evitare distorsioni digitali
+    if (std::abs(somma) > 0.707f) {
+        if (somma > 0.0f) {
+            somma = 0.707f + 0.293f * std::tanh((somma - 0.707f) / 0.293f);
+        } else {
+            somma = -0.707f + 0.293f * std::tanh((somma + 0.707f) / 0.293f);
+        }
+    }
 
     return somma;
+}
+
+void HammerOrchestrator::suonaCampioneStereo(float& outL, float& outR) {
+    float somma_L = 0.0f;
+    float somma_R = 0.0f;
+
+    for (size_t i = 0; i < MAX_VOCI; ++i) {
+        Martelletto& m = martelletti[i];
+
+        if (!m.eLibero()) {
+            float campione = m.suona();
+
+            if (m.eLibero()) {
+                free_stack[free_top++] = i;
+            } else {
+                // Legge il panning direttamente dalla nota (senza ridondanze)
+                const NotaData* n = m.getNota();
+                float gL = n ? n->guadagno_L : 0.707f;
+                float gR = n ? n->guadagno_R : 0.707f;
+
+                somma_L += campione * gL;
+                somma_R += campione * gR;
+            }
+        }
+    }
+
+    float master = guadagno_master.load(std::memory_order_relaxed);
+    somma_L *= master;
+    somma_R *= master;
+
+    // Soft Clipping canale L
+    if (std::abs(somma_L) > 0.707f) {
+        somma_L = (somma_L > 0.0f) ? (0.707f + 0.293f * std::tanh((somma_L - 0.707f) / 0.293f))
+                                   : (-0.707f + 0.293f * std::tanh((somma_L + 0.707f) / 0.293f));
+    }
+    // Soft Clipping canale R
+    if (std::abs(somma_R) > 0.707f) {
+        somma_R = (somma_R > 0.0f) ? (0.707f + 0.293f * std::tanh((somma_R - 0.707f) / 0.293f))
+                                   : (-0.707f + 0.293f * std::tanh((somma_R + 0.707f) / 0.293f));
+    }
+
+    outL = somma_L;
+    outR = somma_R;
 }
 
 void HammerOrchestrator::processaBlocco(float* bufferOutput, size_t numeroFrame) {
@@ -157,9 +208,10 @@ void HammerOrchestrator::processaBlocco(float* bufferOutput, size_t numeroFrame)
     } else {
         // --- CASO STEREO INTERLEAVED (2 Canali) ---
         for (size_t i = 0; i < numeroFrame; ++i) {
-            float campione = suonaSingoloCampione();
-            bufferOutput[i * 2]     = campione; // Canale Sinistro (L)
-            bufferOutput[i * 2 + 1] = campione; // Canale Destro (R)
+            float cL, cR;
+            suonaCampioneStereo(cL, cR);
+            bufferOutput[i * 2]     = cL; // Canale Sinistro (L)
+            bufferOutput[i * 2 + 1] = cR; // Canale Destro (R)
         }
     }
     voci_attive.store(MAX_VOCI - free_top, std::memory_order_relaxed);

@@ -21,6 +21,8 @@ public:
     float getVolume() const;
     StatoMartelletto getStato() const;
     const NotaData* getNota() const;
+    float getGuadagnoL() const { return guadagno_L; }
+    float getGuadagnoR() const { return guadagno_R; }
 
     void setId(int newId);
     void configura(int sampleRate);
@@ -36,11 +38,15 @@ public:
 private:
     int id;
     const NotaData* nota_colpita;
+    const std::vector<float>* buffer_corrente = nullptr;
+
     float guadagno_velocity;
     float inviluppo = 1.0f;
     StatoMartelletto stato;
     int sample_rate = 44100;
     float coef_rilascio = 0.999f;
+    float guadagno_L = 0.707f;
+    float guadagno_R = 0.707f;
 
     unsigned long long indice_lettura;
     unsigned long long lunghezza_fade = 220;

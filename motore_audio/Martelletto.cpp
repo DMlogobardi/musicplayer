@@ -4,7 +4,7 @@
 #include <algorithm>
 
 Martelletto::Martelletto() 
-    : id(-1), nota_colpita(nullptr), guadagno_velocity(0.0f), stato(StatoMartelletto::IDLE), indice_lettura(0) {}
+    : id(-1), nota_colpita(nullptr), buffer_corrente(nullptr), guadagno_velocity(0.0f), stato(StatoMartelletto::IDLE), indice_lettura(0) {}
 
 // --- GETTER ---
 int Martelletto::getId() const {
@@ -47,9 +47,9 @@ void Martelletto::configura(int sampleRate) {
     if(sampleRate <= 0) {
         throw std::invalid_argument("Sample rate must be positive");
     }
+
     sample_rate = sampleRate;
     lunghezza_fade = static_cast<unsigned long long>(0.005 * sample_rate); // 5ms fade-out
-
     durata_declick = static_cast<unsigned long long>(0.002 * sample_rate); 
 }
 
@@ -61,6 +61,24 @@ void Martelletto::colpisci(const NotaData* nota, float velocity) {
         return; // Non armare il martelletto se la velocity è nulla o negativa!
     }
 
+    if (nota->layers.empty()) return;
+    float v_clamped = std::min(velocity, 1.0f);
+
+    size_t idx_layer = 0;
+    for (size_t i = 0; i < nota->layers.size(); ++i) {
+        if (v_clamped <= nota->layers[i].soglia_velocity) {
+            idx_layer = i;
+            break;
+        }
+        idx_layer = i;
+    }
+
+    const auto* target_buffer = &nota->layers[idx_layer].buffer_campioni;
+
+    if (target_buffer == nullptr || target_buffer->empty()) {
+        return; 
+    }
+
     if (stato != StatoMartelletto::IDLE) {
         valore_residuo_pop = ultimo_campione_uscita;
         campioni_declick = durata_declick;
@@ -70,44 +88,41 @@ void Martelletto::colpisci(const NotaData* nota, float velocity) {
     }
 
     nota_colpita = nota;
+    buffer_corrente = target_buffer;
+    guadagno_velocity = std::pow(v_clamped, 2.0f);
 
-    float v_clamped = std::min(velocity, 1.0f);
-    float v_out = std::pow(v_clamped, 2.0f); // Applichiamo una curva di risposta quadratica per la velocity
-
-    guadagno_velocity = v_out;
-
+    guadagno_L = nota->guadagno_L;
+    guadagno_R = nota->guadagno_R;
 
     stato = StatoMartelletto::IN_PERCUSSIONE;
-    
-    inviluppo = 1.0f; // Reset dell'inviluppo per la nuova nota
-    // Reset REALE della posizione del tempo per QUESTO specifico martelletto
+    inviluppo = 1.0f;
     indice_lettura = 0; 
 }
 
 void Martelletto::rilascia(float tau) {
     if (stato == StatoMartelletto::IN_PERCUSSIONE) {
-        if(tau < 0.001f) {
-            tau = 0.001f;
-        }
+        if(tau < 0.001f) tau = 0.001f;
         coef_rilascio = std::exp(-1.0f / (tau * sample_rate));
         stato = StatoMartelletto::IN_SMORZAMENTO;
     }
 }
 
 float Martelletto::suona() {
-    if (stato == StatoMartelletto::IDLE || nota_colpita == nullptr) {
+    if (stato == StatoMartelletto::IDLE || nota_colpita == nullptr || buffer_corrente == nullptr) {
         return 0.0f;
     }
 
-    if (indice_lettura >= nota_colpita->buffer_campioni.size()) {
+    if (indice_lettura >= buffer_corrente->size()) {
         stato = StatoMartelletto::IDLE;
         nota_colpita = nullptr;
+        buffer_corrente = nullptr;
         indice_lettura = 0;
         return 0.0f;
     }
 
-    float campione_base = nota_colpita->buffer_campioni[indice_lettura];
-    unsigned long long restanti = nota_colpita->buffer_campioni.size() - indice_lettura;
+    float campione_base = (*buffer_corrente)[indice_lettura];
+
+    unsigned long long restanti = buffer_corrente->size() - indice_lettura;
     if (restanti < lunghezza_fade) {
         float fade_factor = static_cast<float>(restanti) / static_cast<float>(lunghezza_fade);
         campione_base *= fade_factor;
@@ -123,6 +138,7 @@ float Martelletto::suona() {
         inviluppo = 0.0f;
         stato = StatoMartelletto::IDLE;
         nota_colpita = nullptr;
+        buffer_corrente = nullptr;
         indice_lettura = 0;
     }
 
