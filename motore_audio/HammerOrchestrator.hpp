@@ -1,12 +1,14 @@
 #pragma once
 #include <array>
+#include <atomic>
+
+#ifndef HAMMERORCHESTRATOR_HPP
+#define HAMMERORCHESTRATOR_HPP
+
 #include "Martelletto.hpp"
 #include "Dischetto.hpp"
 #include "EventoAudio.hpp"
 #include "LockFreeQueue.hpp"
-
-#ifndef HAMMERORCHESTRATOR_HPP
-#define HAMMERORCHESTRATOR_HPP
 
 class HammerOrchestrator {
     public:
@@ -22,11 +24,20 @@ class HammerOrchestrator {
 
         size_t getNumeroVoci() const;
         size_t getVociAttive() const;
+
+        void setGuadagnoMaster(float nuovoGuadagno) {
+            guadagno_master.store(nuovoGuadagno, std::memory_order_relaxed);
+        }
+        float getGuadagnoMaster() const {
+            return guadagno_master.load(std::memory_order_relaxed);
+        }
+        
     private:
+        std::atomic<size_t> voci_attive{0};
         const Dischetto* dischetto_riferimento;
         int sample_rate;
         int numeroCanali;
-        const float guadagno_master = 0.25f;
+        std::atomic<float> guadagno_master{0.70f};
         std::array<Martelletto, MAX_VOCI> martelletti;
 
         std::array<size_t, MAX_VOCI> free_stack;

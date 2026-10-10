@@ -8,7 +8,7 @@ enum class TipoEventoAudio {
 };
 
 struct EventoAudio {
-    TipoEventoAudio tipo;
+    TipoEventoAudio tipo = TipoEventoAudio::NOTE_ON;
     size_t indiceNota = 0;
     float velocity = 0.0f;
 };

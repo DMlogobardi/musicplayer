@@ -1,6 +1,7 @@
-#include "NotaData.hpp"
 #ifndef MARTELLETTO_HPP
 #define MARTELLETTO_HPP
+
+#include "NotaData.hpp"
 
 class Martelletto {
 public:

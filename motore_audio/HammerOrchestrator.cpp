@@ -75,7 +75,7 @@ void HammerOrchestrator::eseguiNoteOnInterno(size_t indiceNota, float velocity) 
     if (dischetto_riferimento == nullptr) return;
 
     const NotaData* nota = dischetto_riferimento->getNota(indiceNota);
-    if (nota == nullptr) return;
+    if (nota == nullptr || velocity <= 0.0f) return;
 
     size_t idx = 0;
     if(free_top > 0) {
@@ -85,9 +85,6 @@ void HammerOrchestrator::eseguiNoteOnInterno(size_t indiceNota, float velocity) 
     }
 
     martelletti[idx].colpisci(nota, velocity);
-    if (martelletti[idx].eLibero()) {
-        free_stack[free_top++] = idx;
-    }
 }
 
 void HammerOrchestrator::eseguiNoteOffInterno(size_t indiceNota) {
@@ -129,7 +126,7 @@ float HammerOrchestrator::suonaSingoloCampione() {
         }
     }
 
-    somma *= guadagno_master; // Applichiamo il guadagno master al mix finale
+    somma *= guadagno_master.load(std::memory_order_relaxed);
 
     somma = std::tanh(somma); // Soft clipping per evitare distorsioni digitali indesiderate
 
@@ -165,6 +162,7 @@ void HammerOrchestrator::processaBlocco(float* bufferOutput, size_t numeroFrame)
             bufferOutput[i * 2 + 1] = campione; // Canale Destro (R)
         }
     }
+    voci_attive.store(MAX_VOCI - free_top, std::memory_order_relaxed);
 }
 
 size_t HammerOrchestrator::getNumeroVoci() const {
@@ -172,5 +170,5 @@ size_t HammerOrchestrator::getNumeroVoci() const {
 }
 
 size_t HammerOrchestrator::getVociAttive() const {
-    return MAX_VOCI - free_top;
+    return voci_attive.load(std::memory_order_relaxed);
 }

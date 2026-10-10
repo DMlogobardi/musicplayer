@@ -1,8 +1,9 @@
 #pragma once
 #include <array>
 #include <atomic>
+#include <cstddef>
 
-template <typename T, size_t CAPACITA = 64>
+template <typename T, size_t CAPACITA = 256>
 class LockFreeQueue {
 public:
     LockFreeQueue() : head(0), tail(0) {}
