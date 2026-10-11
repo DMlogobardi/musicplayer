@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <atomic>
+#include <vector>
 
 #ifndef HAMMERORCHESTRATOR_HPP
 #define HAMMERORCHESTRATOR_HPP
@@ -12,11 +13,12 @@
 
 class HammerOrchestrator {
     public:
-        static constexpr size_t MAX_VOCI = 32;
+        static constexpr size_t MAX_VOCI = 128;
         HammerOrchestrator(const Dischetto* dischetto, int sampleRateStream, int numeroCanali = 2);
 
         void noteOn(size_t indiceNota, float velocity = 1.0f);
         void noteOff(size_t indiceNota);
+        void sustainPedal(bool premuto);
         void rilasciaTutto();
 
         float suonaSingoloCampione();
@@ -44,14 +46,22 @@ class HammerOrchestrator {
         std::array<size_t, MAX_VOCI> free_stack;
         size_t free_top;
 
+        std::array<size_t, MAX_VOCI> voci_attive_indici;
+        size_t num_voci_attive = 0;
+
+        std::vector<uint8_t> tasti_premuti; // Array per tenere traccia dei tasti premuti
+        bool sustain_pedal_down = false;
+
         LockFreeQueue<EventoAudio> coda_eventi;
 
         void eseguiNoteOnInterno(size_t indiceNota, float velocity);
         void eseguiNoteOffInterno(size_t indiceNota);
+        void eseguiSustainPedalInterno(bool premuto);
         void eseguiRilasciaTuttoInterno();
         size_t trovaMartellettoDaRubare();
-
-        float calcolaPanDaFrequenza(float frequenza) const;
+        
+        void aggiungiVoceAttiva(size_t index);
+        void rimuoviVoceAttiva(size_t index);
 };
 
 #endif // HAMMERORCHESTRATOR_HPP

@@ -9,6 +9,7 @@ public:
     enum class StatoMartelletto {
         IDLE,             // A riposo, disponibile
         IN_PERCUSSIONE,   // Tasto premuto, in riproduzione
+        IN_SUSTAIN,        // Tasto premuto, in riproduzione con smorzatore alzato
         IN_SMORZAMENTO    // Tasto rilasciato, lo smorzatore cala sulla corda
     };
     // Constructor
@@ -23,20 +24,24 @@ public:
     const NotaData* getNota() const;
     float getGuadagnoL() const { return guadagno_L; }
     float getGuadagnoR() const { return guadagno_R; }
+    size_t getIndiceNota() const { return indice_nota; }
 
     void setId(int newId);
+    void setStato(StatoMartelletto nuovoStato) { stato = nuovoStato; }
     void configura(int sampleRate);
 
     // Check if the hammer is free (IDLE)
     bool eLibero() const;
+    void reset();
 
     //azzioni del martelletto
-    void colpisci(const NotaData* nota, float velocity = 1.0f);
+    void colpisci(size_t idxNota, const NotaData* nota, float velocity = 1.0f);
     void rilascia(float tauSecondi = 0.08f);
     float suona();
 
 private:
     int id;
+    size_t indice_nota = 0;
     const NotaData* nota_colpita;
     const std::vector<float>* buffer_corrente = nullptr;
 

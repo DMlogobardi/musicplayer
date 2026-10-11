@@ -4,6 +4,7 @@
 enum class TipoEventoAudio {
     NOTE_ON,
     NOTE_OFF,
+    SUSTAIN_PEDAL,
     RILASCIA_TUTTO
 };
 

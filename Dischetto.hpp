@@ -10,7 +10,7 @@ public:
     Dischetto() = default;
 
     // Metodo di simulazione: pre-genera le note con le armoniche per il nostro test
-    void simulaGenerazioneDisco(int numeroNote = 12, int sampleRate = 44100, float durataSecondi = 2.0f);
+    void simulaGenerazioneDisco(int numeroNote = 49, int sampleRate = 44100, float durataSecondi = 4.0f);
 
     // Accesso ultra-veloce O(1) in sola lettura
     const NotaData* getNota(size_t indice) const;

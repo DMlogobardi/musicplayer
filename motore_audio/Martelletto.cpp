@@ -53,7 +53,20 @@ void Martelletto::configura(int sampleRate) {
     durata_declick = static_cast<unsigned long long>(0.002 * sample_rate); 
 }
 
-void Martelletto::colpisci(const NotaData* nota, float velocity) {
+void Martelletto::reset() {
+    stato = StatoMartelletto::IDLE;
+    nota_colpita = nullptr;
+    buffer_corrente = nullptr;
+    indice_lettura = 0;
+    inviluppo = 0.0f;
+    guadagno_velocity = 0.0f;
+    ultimo_campione_uscita = 0.0f;
+    valore_residuo_pop = 0.0f;
+    campioni_declick = 0;
+    indice_nota = 0;
+}
+
+void Martelletto::colpisci(size_t idxNota, const NotaData* nota, float velocity) {
     if (nota == nullptr) {
         return; // Non armare il martelletto se la nota non esiste!
     }
@@ -87,6 +100,7 @@ void Martelletto::colpisci(const NotaData* nota, float velocity) {
         campioni_declick = 0;
     }
 
+    indice_nota = idxNota;
     nota_colpita = nota;
     buffer_corrente = target_buffer;
     guadagno_velocity = std::pow(v_clamped, 2.0f);
@@ -100,7 +114,7 @@ void Martelletto::colpisci(const NotaData* nota, float velocity) {
 }
 
 void Martelletto::rilascia(float tau) {
-    if (stato == StatoMartelletto::IN_PERCUSSIONE) {
+    if (stato == StatoMartelletto::IN_PERCUSSIONE || stato == StatoMartelletto::IN_SUSTAIN) {
         if(tau < 0.001f) tau = 0.001f;
         coef_rilascio = std::exp(-1.0f / (tau * sample_rate));
         stato = StatoMartelletto::IN_SMORZAMENTO;
@@ -134,19 +148,16 @@ float Martelletto::suona() {
         inviluppo *= coef_rilascio;   // Decadimento rapido (smorzatore in feltro)
     }
 
-    if (inviluppo < 0.001f) {
-        inviluppo = 0.0f;
-        stato = StatoMartelletto::IDLE;
-        nota_colpita = nullptr;
-        buffer_corrente = nullptr;
-        indice_lettura = 0;
+    if (inviluppo < 1e-5f) {
+        reset();
+        return 0.0f;
     }
 
     float uscita_corrente = campione_base * guadagno_velocity * inviluppo;
 
     if (campioni_declick > 0) {
         float fattore_declick = static_cast<float>(campioni_declick) / static_cast<float>(durata_declick);
-        uscita_corrente += (valore_residuo_pop * fattore_declick);
+        uscita_corrente = uscita_corrente * (1.0f - fattore_declick) + (valore_residuo_pop * fattore_declick);
         campioni_declick--;
     }
 

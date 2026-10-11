@@ -7,7 +7,7 @@
 #include "Dischetto.hpp"
 #include "HammerOrchestrator.hpp"
 
-// Helper per salvare il file WAV stereo a 16-bit
+// Salva il file WAV stereo a 16-bit PCM
 void salvaWAVStereo(const std::string& filename, const std::vector<float>& bufferStereo, int sampleRate) {
     std::ofstream file(filename, std::ios::binary);
     if (!file.is_open()) return;
@@ -44,110 +44,133 @@ void salvaWAVStereo(const std::string& filename, const std::vector<float>& buffe
     }
 }
 
-// Struttura dell'evento spartito
-struct NotaSpartito {
-    size_t indiceNota;    // 0=Do, 1=Re, 2=Mi, 3=Fa, 4=Sol, 5=La, 6=Si
-    float durataSecondi;  // Se 0.0f, viene suonata insieme alla nota successiva (Accordo)
-    float velocity;       // Dinamica (0.1 -> 1.0)
-};
+// Convertitore da Nota MIDI standard a Indice Dischetto (C2 = MIDI 36 = Indice 0)
+constexpr size_t MIDI_BASE = 36;
+inline size_t m(int midiNote) {
+    return static_cast<size_t>(midiNote - MIDI_BASE);
+}
 
 int main() {
-    std::cout << "=== GENERAZIONE AUDIO: INNO ALLA GIOIA (BEETHOVEN) ===" << std::endl;
+    std::cout << "=== TEST MOTORE AUDIO: J.S. BACH - PRELUDIO IN DO MAGGIORE (BWV 846) ===" << std::endl;
 
     const int sampleRate = 44100;
     const size_t framesPerBlock = 256;
 
-    // 1. Inizializzazione Dischetto ed Orchestrator
+    // 1. Inizializzazione Dischetto (49 note: C2 -> C6)
     Dischetto dischetto;
-    dischetto.simulaGenerazioneDisco(7, sampleRate, 3.0f);
-    HammerOrchestrator orchestrator(&dischetto, sampleRate, 2); // Output Stereo
-
-    // Mappatura ottava standard: 0=Do, 1=Re, 2=Mi, 3=Fa, 4=Sol, 5=La, 6=Si
-    std::vector<NotaSpartito> spartito = {
-        // --- BATTUTA 1: Mi Mi Fa Sol ---
-        {0, 0.0f, 0.35f}, {2, 0.40f, 0.60f},  // Bass Do + Melodia Mi
-        {2, 0.40f, 0.55f},
-        {3, 0.40f, 0.65f},
-        {4, 0.40f, 0.75f},
-
-        // --- BATTUTA 2: Sol Fa Mi Re ---
-        {4, 0.0f, 0.40f}, {4, 0.40f, 0.70f},  // Bass Sol + Melodia Sol
-        {3, 0.40f, 0.60f},
-        {2, 0.40f, 0.55f},
-        {1, 0.40f, 0.50f},
-
-        // --- BATTUTA 3: Do Do Re Mi ---
-        {0, 0.0f, 0.45f}, {0, 0.40f, 0.50f},  // Bass Do + Melodia Do
-        {0, 0.40f, 0.50f},
-        {1, 0.40f, 0.60f},
-        {2, 0.40f, 0.65f},
-
-        // --- BATTUTA 4: Mi. Re Re ---
-        {2, 0.60f, 0.60f},
-        {1, 0.20f, 0.45f},
-        {4, 0.0f, 0.40f}, {1, 0.80f, 0.55f},  // Accordo finale di frase (Sol + Re)
-
-        // --- BATTUTA 5 (Ripresa): Mi Mi Fa Sol ---
-        {0, 0.0f, 0.40f}, {2, 0.40f, 0.65f},
-        {2, 0.40f, 0.60f},
-        {3, 0.40f, 0.70f},
-        {4, 0.40f, 0.80f},
-
-        // --- BATTUTA 6: Sol Fa Mi Re ---
-        {4, 0.0f, 0.45f}, {4, 0.40f, 0.75f},
-        {3, 0.40f, 0.65f},
-        {2, 0.40f, 0.60f},
-        {1, 0.40f, 0.55f},
-
-        // --- BATTUTA 7: Do Do Re Mi ---
-        {0, 0.0f, 0.45f}, {0, 0.40f, 0.55f},
-        {0, 0.40f, 0.50f},
-        {1, 0.40f, 0.60f},
-        {2, 0.40f, 0.65f},
-
-        // --- BATTUTA 8: Re. Do Do (Gran Finale) ---
-        {1, 0.60f, 0.55f},
-        {0, 0.20f, 0.45f},
-        // Accordo finale Pieno (Do + Mi + Sol)
-        {0, 0.0f, 0.75f}, {2, 0.0f, 0.75f}, {4, 1.50f, 0.80f}
-    };
+    dischetto.simulaGenerazioneDisco(49, sampleRate, 4.0f);
+    HammerOrchestrator orchestrator(&dischetto, sampleRate, 2);
 
     std::vector<float> tracciaAudioCompleta;
-    std::vector<float> bufferBlocco(framesPerBlock * 2); // 2 Canali Stereo
+    std::vector<float> bufferBlocco(framesPerBlock * 2);
 
-    // 2. Sintesi nota per nota
-    for (const auto& nota : spartito) {
-        // Invia l'evento NOTE_ON alla coda lock-free
-        orchestrator.noteOn(nota.indiceNota, nota.velocity);
+    auto renderizzaTempo = [&](float durataSec) {
+        size_t blocchi = static_cast<size_t>((durataSec * sampleRate) / framesPerBlock);
+        for (size_t b = 0; b < blocchi; ++b) {
+            orchestrator.processaBlocco(bufferBlocco.data(), framesPerBlock);
+            tracciaAudioCompleta.insert(tracciaAudioCompleta.end(), bufferBlocco.begin(), bufferBlocco.end());
+        }
+    };
 
-        // Se durataSecondi == 0.0f, significa che fa parte di un accordo contemporaneo
-        if (nota.durataSecondi > 0.0f) {
-            size_t blocchiNota = static_cast<size_t>((nota.durataSecondi * sampleRate) / framesPerBlock);
+    auto suonaBattutaArpeggiata = [&](int basso, int tenore, const std::vector<int>& arpeggio, float velBasso, float velMelodia) {
+        // Re-pedaling di inizio battuta: rilascio e ri-pressione rapida del pedale
+        orchestrator.sustainPedal(false);
+        renderizzaTempo(0.015f); // Stacco acustico di 15ms
+        orchestrator.sustainPedal(true);
 
-            for (size_t b = 0; b < blocchiNota; ++b) {
-                // Rilascio del tasto (NOTE_OFF) a metà durata per lo staccato
-                if (b == blocchiNota / 2) {
-                    orchestrator.noteOff(nota.indiceNota);
-                }
+        // Nota di Basso
+        orchestrator.noteOn(m(basso), velBasso);
+        renderizzaTempo(0.18f);
+        orchestrator.noteOff(m(basso));
 
-                orchestrator.processaBlocco(bufferBlocco.data(), framesPerBlock);
-                tracciaAudioCompleta.insert(tracciaAudioCompleta.end(), bufferBlocco.begin(), bufferBlocco.end());
+        // Nota Tenore
+        orchestrator.noteOn(m(tenore), velBasso * 0.9f);
+        renderizzaTempo(0.18f);
+        orchestrator.noteOff(m(tenore));
+
+        // Arpeggio a 16esimi ripetuto 2 volte nella battuta
+        for (int rep = 0; rep < 2; ++rep) {
+            for (int notaMidi : arpeggio) {
+                orchestrator.noteOn(m(notaMidi), velMelodia);
+                renderizzaTempo(0.15f);
+                orchestrator.noteOff(m(notaMidi));
+                renderizzaTempo(0.02f);
             }
         }
-    }
+    };
 
-    // 3. Coda di 1.5 secondi per far sfumare la risonanza finale dell'ultimo accordo
-    orchestrator.rilasciaTutto();
-    size_t blocchiCoda = static_cast<size_t>((1.5f * sampleRate) / framesPerBlock);
-    for (size_t b = 0; b < blocchiCoda; ++b) {
-        orchestrator.processaBlocco(bufferBlocco.data(), framesPerBlock);
-        tracciaAudioCompleta.insert(tracciaAudioCompleta.end(), bufferBlocco.begin(), bufferBlocco.end());
-    }
+    // Note MIDI utili per il Preludio
+    constexpr int C2 = 36, B2 = 47;
+    constexpr int C3 = 48, D3 = 50, E3 = 52, F3 = 53, G3 = 55, A3 = 57, B3 = 59;
+    constexpr int C4 = 60, D4 = 62, E4 = 64, F4 = 65, Fs4 = 66, G4 = 67, A4 = 69, B4 = 71;
+    constexpr int C5 = 72, D5 = 74, E5 = 76;
 
-    // 4. Scrittura su disco
-    const std::string outputFile = "inno_alla_gioia_stereo.wav";
+    std::cout << "[1/3] Sintesi delle battute in corso con gestione Pedale Sustain..." << std::endl;
+
+    // --- BATTUTA 1: Do Maggiore ---
+    suonaBattutaArpeggiata(C3, E3, {G3, C4, E4, G3, C4, E4}, 0.75f, 0.55f);
+
+    // --- BATTUTA 2: Re minore / Do ---
+    suonaBattutaArpeggiata(C3, D3, {A3, D4, F4, A3, D4, F4}, 0.75f, 0.55f);
+
+    // --- BATTUTA 3: Sol 7 / Si ---
+    suonaBattutaArpeggiata(B2, D3, {G3, D4, F4, G3, D4, F4}, 0.75f, 0.55f);
+
+    // --- BATTUTA 4: Do Maggiore ---
+    suonaBattutaArpeggiata(C3, E3, {G3, C4, E4, G3, C4, E4}, 0.75f, 0.55f);
+
+    // --- BATTUTA 5: La minore / Do ---
+    suonaBattutaArpeggiata(C3, E3, {A3, E4, A4, A3, E4, A4}, 0.75f, 0.55f);
+
+    // --- BATTUTA 6: Re 7 / Fsi ---
+    suonaBattutaArpeggiata(C3, D3, {Fs4, A4, C5, Fs4, A4, C5}, 0.75f, 0.55f);
+
+    // --- BATTUTA 7: Sol Maggiore ---
+    suonaBattutaArpeggiata(B2, D3, {G3, D4, G4, G3, D4, G4}, 0.75f, 0.55f);
+
+    // --- BATTUTA FINALE: Accordo Pieno Sostenuto ---
+    std::cout << "[2/3] Generazione dell'accordo finale con risonanza d'ambiente..." << std::endl;
+
+    orchestrator.sustainPedal(false);
+    renderizzaTempo(0.02f);
+    orchestrator.sustainPedal(true);
+
+    // Attacco simultaneo di tutte le note dell'accordo finale
+    orchestrator.noteOn(m(C2), 0.85f);
+    orchestrator.noteOn(m(C3), 0.80f);
+    orchestrator.noteOn(m(G3), 0.75f);
+    orchestrator.noteOn(m(C4), 0.75f);
+    orchestrator.noteOn(m(E4), 0.75f);
+    orchestrator.noteOn(m(G4), 0.75f);
+    orchestrator.noteOn(m(C5), 0.80f);
+
+    // Teniamo le dita sui tasti per 1 secondo
+    renderizzaTempo(1.0f);
+
+    // Rilasciamo i tasti fisici
+    orchestrator.noteOff(m(C2));
+    orchestrator.noteOff(m(C3));
+    orchestrator.noteOff(m(G3));
+    orchestrator.noteOff(m(C4));
+    orchestrator.noteOff(m(E4));
+    orchestrator.noteOff(m(G4));
+    orchestrator.noteOff(m(C5));
+
+    // Lasciamo sfumare la risonanza con il pedale ancora abbassato per altri 3.5 secondi
+    renderizzaTempo(3.5f);
+
+    // Rilascio finale del pedale e coda audio
+    orchestrator.sustainPedal(false);
+    renderizzaTempo(1.0f);
+
+    // 4. Scrittura su file WAV
+    std::cout << "[3/3] Scrittura file WAV stereo..." << std::endl;
+    const std::string outputFile = "bach_prelude_c_major.wav";
     salvaWAVStereo(outputFile, tracciaAudioCompleta, sampleRate);
-    std::cout << "File WAV generato con successo: '" << outputFile << "'" << std::endl;
+
+    std::cout << "SUCCESS: File WAV generato con successo: '" << outputFile << "'" << std::endl;
+    std::cout << "Campioni totali generati: " << tracciaAudioCompleta.size() / 2 << " frames (" 
+              << (tracciaAudioCompleta.size() / 2) / static_cast<float>(sampleRate) << " secondi)." << std::endl;
 
     return 0;
 }
