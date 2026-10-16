@@ -36,7 +36,7 @@ public:
 
     //azzioni del martelletto
     void colpisci(size_t idxNota, const NotaData* nota, float velocity = 1.0f);
-    void rilascia(float tauSecondi = 0.08f);
+    void rilascia(float tauSecondi = -1.0f);
     float suona();
 
 private:
@@ -52,6 +52,8 @@ private:
     float coef_rilascio = 0.999f;
     float guadagno_L = 0.707f;
     float guadagno_R = 0.707f;
+    float livello = 0.0f;
+    float coef_livello = 0.9996f;
 
     unsigned long long indice_lettura;
     unsigned long long lunghezza_fade = 220;

@@ -3,6 +3,8 @@
 #include <cmath>
 #include <algorithm>
 
+static constexpr float FREQ_SENZA_SMORZATORI = 1400.0f;
+
 Martelletto::Martelletto() 
     : id(-1), nota_colpita(nullptr), buffer_corrente(nullptr), guadagno_velocity(0.0f), stato(StatoMartelletto::IDLE), indice_lettura(0) {}
 
@@ -28,7 +30,7 @@ const NotaData* Martelletto::getNota() const {
 }
 
 float Martelletto::getVolume() const {
-    return inviluppo * guadagno_velocity;
+    return livello;
 }
 
 bool Martelletto::eLibero() const {
@@ -50,7 +52,9 @@ void Martelletto::configura(int sampleRate) {
 
     sample_rate = sampleRate;
     lunghezza_fade = static_cast<unsigned long long>(0.005 * sample_rate); // 5ms fade-out
-    durata_declick = static_cast<unsigned long long>(0.002 * sample_rate); 
+    durata_declick = static_cast<unsigned long long>(0.002 * sample_rate);
+
+    coef_livello = std::exp(-1.0f / (0.05f * static_cast<float>(sample_rate)));
 }
 
 void Martelletto::reset() {
@@ -64,6 +68,7 @@ void Martelletto::reset() {
     valore_residuo_pop = 0.0f;
     campioni_declick = 0;
     indice_nota = 0;
+    livello = 0.0f;
 }
 
 void Martelletto::colpisci(size_t idxNota, const NotaData* nota, float velocity) {
@@ -104,6 +109,7 @@ void Martelletto::colpisci(size_t idxNota, const NotaData* nota, float velocity)
     nota_colpita = nota;
     buffer_corrente = target_buffer;
     guadagno_velocity = std::pow(v_clamped, 2.0f);
+    livello = guadagno_velocity;
 
     guadagno_L = nota->guadagno_L;
     guadagno_R = nota->guadagno_R;
@@ -114,12 +120,23 @@ void Martelletto::colpisci(size_t idxNota, const NotaData* nota, float velocity)
 }
 
 void Martelletto::rilascia(float tau) {
-    if (stato == StatoMartelletto::IN_PERCUSSIONE || stato == StatoMartelletto::IN_SUSTAIN) {
-        if(tau < 0.001f) tau = 0.001f;
-        coef_rilascio = std::exp(-1.0f / (tau * sample_rate));
-        stato = StatoMartelletto::IN_SMORZAMENTO;
+    if (stato != StatoMartelletto::IN_PERCUSSIONE && stato != StatoMartelletto::IN_SUSTAIN) return;
+
+    const float f = (nota_colpita != nullptr) ? nota_colpita->frequenza : 261.63f;
+
+    if (tau < 0.0f && f > FREQ_SENZA_SMORZATORI) {
+        coef_rilascio = 1.0f;   // niente feltro: la corda continua a decadere da sola
+    } else {
+        if (tau < 0.0f) {
+            // più grave = smorzatore più lento (Do2 ≈ 0.28 s, Do4 ≈ 0.12 s, Do6 ≈ 0.05 s)
+            tau = std::clamp(0.12f * std::pow(261.63f / f, 0.6f), 0.03f, 0.35f);
+        }
+        if (tau < 0.001f) tau = 0.001f;
+        coef_rilascio = std::exp(-1.0f / (tau * static_cast<float>(sample_rate)));
     }
+    stato = StatoMartelletto::IN_SMORZAMENTO;
 }
+
 
 float Martelletto::suona() {
     if (stato == StatoMartelletto::IDLE || nota_colpita == nullptr || buffer_corrente == nullptr) {
@@ -162,6 +179,7 @@ float Martelletto::suona() {
     }
 
     ultimo_campione_uscita = uscita_corrente;
+    livello = std::max(std::abs(uscita_corrente), livello * coef_livello);
 
     return uscita_corrente;
 }

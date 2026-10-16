@@ -3,7 +3,7 @@
 #include <atomic>
 #include <cstddef>
 
-template <typename T, size_t CAPACITA = 256>
+template <typename T, size_t CAPACITA = 1024>
 class LockFreeQueue {
 public:
     LockFreeQueue() : head(0), tail(0) {}
@@ -27,6 +27,6 @@ public:
 
 private:
     std::array<T, CAPACITA> buffer;
-    std::atomic<size_t> head;
-    std::atomic<size_t> tail;
+    alignas(64) std::atomic<size_t> head;
+    alignas(64) std::atomic<size_t> tail;
 };

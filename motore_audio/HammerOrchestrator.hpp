@@ -1,6 +1,9 @@
 #pragma once
+
 #include <array>
 #include <atomic>
+#include <cstdint>
+#include <memory>
 #include <vector>
 
 #ifndef HAMMERORCHESTRATOR_HPP
@@ -14,12 +17,12 @@
 class HammerOrchestrator {
     public:
         static constexpr size_t MAX_VOCI = 128;
-        HammerOrchestrator(const Dischetto* dischetto, int sampleRateStream, int numeroCanali = 2);
+        HammerOrchestrator(std::shared_ptr<const Dischetto> dischetto, int sampleRateStream, int numeroCanali = 2);
 
-        void noteOn(size_t indiceNota, float velocity = 1.0f);
-        void noteOff(size_t indiceNota);
-        void sustainPedal(bool premuto);
-        void rilasciaTutto();
+        bool noteOn(size_t indiceNota, float velocity = 1.0f);
+        bool noteOff(size_t indiceNota);
+        bool sustainPedal(bool premuto);
+        bool rilasciaTutto();
 
         float suonaSingoloCampione();
         void suonaCampioneStereo(float& outL, float& outR);
@@ -37,7 +40,7 @@ class HammerOrchestrator {
         
     private:
         std::atomic<size_t> voci_attive{0};
-        const Dischetto* dischetto_riferimento;
+        std::shared_ptr<const Dischetto> dischetto_riferimento;
         int sample_rate;
         int numeroCanali;
         std::atomic<float> guadagno_master{0.70f};

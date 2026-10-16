@@ -2,10 +2,11 @@
 #include <stdexcept>
 #include <cmath>
 #include <algorithm>
+#include <utility>
 
 
-HammerOrchestrator::HammerOrchestrator(const Dischetto* dischetto, int sampleRateStream, int numeroCanali)
-    : dischetto_riferimento(dischetto), sample_rate(sampleRateStream), numeroCanali(numeroCanali), free_top(MAX_VOCI) {
+HammerOrchestrator::HammerOrchestrator(std::shared_ptr<const Dischetto> dischetto, int sampleRateStream, int numeroCanali)
+    : dischetto_riferimento(std::move(dischetto)), sample_rate(sampleRateStream), numeroCanali(numeroCanali), free_top(MAX_VOCI) {
         if (sampleRateStream <= 0) {
             throw std::invalid_argument("Sample rate must be positive");
         }
@@ -33,50 +34,47 @@ HammerOrchestrator::HammerOrchestrator(const Dischetto* dischetto, int sampleRat
         }
 }
 
-void HammerOrchestrator::noteOn(size_t indiceNota, float velocity) {
-    coda_eventi.push({ TipoEventoAudio::NOTE_ON, indiceNota, velocity });
+bool HammerOrchestrator::noteOn(size_t indiceNota, float velocity) {
+    return coda_eventi.push({ TipoEventoAudio::NOTE_ON, indiceNota, velocity });
 }
 
-void HammerOrchestrator::noteOff(size_t indiceNota) {
-    coda_eventi.push({ TipoEventoAudio::NOTE_OFF, indiceNota, 0.0f });
+bool HammerOrchestrator::noteOff(size_t indiceNota) {
+    return coda_eventi.push({ TipoEventoAudio::NOTE_OFF, indiceNota, 0.0f });
 }
 
-void HammerOrchestrator::rilasciaTutto() {
-    coda_eventi.push({ TipoEventoAudio::RILASCIA_TUTTO, 0, 0.0f });
+bool HammerOrchestrator::rilasciaTutto() {
+    return coda_eventi.push({ TipoEventoAudio::RILASCIA_TUTTO, 0, 0.0f });
 }
 
-void HammerOrchestrator::sustainPedal(bool premuto) {
-    coda_eventi.push({ TipoEventoAudio::SUSTAIN_PEDAL, 0, premuto ? 1.0f : 0.0f });
+bool HammerOrchestrator::sustainPedal(bool premuto) {
+    return coda_eventi.push({ TipoEventoAudio::SUSTAIN_PEDAL, 0, premuto ? 1.0f : 0.0f });
+}
+
+inline float softClip(float x) {
+    constexpr float T = 0.707f, A = 1.0f - T;
+    float a = std::abs(x);
+    if (a <= T) return x;
+    float d = a - T;
+    float y = T + A * d / (A + d);
+    return x > 0.0f ? y : -y;
 }
 
 size_t HammerOrchestrator::trovaMartellettoDaRubare() {
-    size_t indice_scelto = 0;
-    float min_volume = 2.0f;
+    using S = Martelletto::StatoMartelletto;
+    // Dalla meno alla più "preziosa"
+    const S priorita[3] = { S::IN_SMORZAMENTO, S::IN_SUSTAIN, S::IN_PERCUSSIONE };
 
-    // 1. Cerca tra le note in smorzamento (tasto già rilasciato dall'utente) quella col volume più basso
-    for (size_t i = 0; i < MAX_VOCI; ++i) {
-        if (martelletti[i].getStato() == Martelletto::StatoMartelletto::IN_SMORZAMENTO) {
-            if (martelletti[i].getVolume() < min_volume) {
-                min_volume = martelletti[i].getVolume();
-                indice_scelto = i;
-            }
+    for (S classe : priorita) {
+        size_t scelto = MAX_VOCI;     // MAX_VOCI = "nessuno trovato"
+        float min_livello = 1e9f;
+        for (size_t i = 0; i < MAX_VOCI; ++i) {
+            if (martelletti[i].getStato() != classe) continue;
+            float l = martelletti[i].getVolume();
+            if (l < min_livello) { min_livello = l; scelto = i; }
         }
+        if (scelto != MAX_VOCI) return scelto;
     }
-
-    if (min_volume < 2.0f) {
-        return indice_scelto;
-    }
-
-    // 2. Extrema Ratio: Se tutti e 32 i martelletti sono tenuti premuti, ruba la voce col volume più basso
-    min_volume = 2.0f;
-    for (size_t i = 0; i < MAX_VOCI; ++i) {
-        if (martelletti[i].getVolume() < min_volume) {
-            min_volume = martelletti[i].getVolume();
-            indice_scelto = i;
-        }
-    }
-
-    return indice_scelto;
+    return 0;   // irraggiungibile se free_top == 0
 }
 
 void HammerOrchestrator::aggiungiVoceAttiva(size_t index) {
@@ -100,7 +98,7 @@ void HammerOrchestrator::eseguiNoteOnInterno(size_t indiceNota, float velocity) 
     if (dischetto_riferimento == nullptr || indiceNota >= tasti_premuti.size()) return;
 
     const NotaData* nota = dischetto_riferimento->getNota(indiceNota);
-    if (nota == nullptr || velocity <= 0.0f) return;
+    if (nota == nullptr || !(velocity > 0.0f)) return;
 
     tasti_premuti[indiceNota] = true;
 
@@ -167,8 +165,10 @@ void HammerOrchestrator::eseguiSustainPedalInterno(bool premuto) {
 
 void HammerOrchestrator::eseguiRilasciaTuttoInterno() {
     for (size_t i = 0; i < MAX_VOCI; ++i) {
-        martelletti[i].rilascia();
+        martelletti[i].rilascia(0.05f);
     }
+    std::fill(tasti_premuti.begin(), tasti_premuti.end(), 0);
+    sustain_pedal_down = false;
 }
 
 float HammerOrchestrator::suonaSingoloCampione() {
@@ -192,13 +192,7 @@ float HammerOrchestrator::suonaSingoloCampione() {
     }
 
     somma *= guadagno_master.load(std::memory_order_relaxed);
-
-    // Soft Clipper Razionale ultra-veloce (senza std::tanh)
-    if (std::abs(somma) > 0.707f) {
-        float diff = std::abs(somma) - 0.707f;
-        float sat = 0.707f + diff / (1.0f + diff * diff);
-        somma = (somma > 0.0f) ? sat : -sat;
-    }
+    somma = softClip(somma);
 
     return somma;
 }
@@ -229,18 +223,8 @@ void HammerOrchestrator::suonaCampioneStereo(float& outL, float& outR) {
     somma_L *= master;
     somma_R *= master;
 
-    // Soft Clipper Razionale (senza std::tanh)
-    if (std::abs(somma_L) > 0.707f) {
-        float diff = std::abs(somma_L) - 0.707f;
-        float sat = 0.707f + diff / (1.0f + diff * diff);
-        somma_L = (somma_L > 0.0f) ? sat : -sat;
-    }
-
-    if (std::abs(somma_R) > 0.707f) {
-        float diff = std::abs(somma_R) - 0.707f;
-        float sat = 0.707f + diff / (1.0f + diff * diff);
-        somma_R = (somma_R > 0.0f) ? sat : -sat;
-    }
+    somma_L = softClip(somma_L);
+    somma_R = softClip(somma_R);
 
     outL = somma_L;
     outR = somma_R;

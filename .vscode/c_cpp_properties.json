@@ -15,6 +15,23 @@
             "cStandard": "c17",
             "cppStandard": "c++17",
             "intelliSenseMode": "windows-msvc-x64"
+        },
+        {
+            "name": "Android-arm64",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${userHome}/AppData/Local/Android/Sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/windows-x86_64/sysroot/usr/include",
+                "${workspaceFolder}/build/_deps/oboe-src/include"
+            ],
+            "defines": [
+                "_DEBUG",
+                "ANDROID",
+                "__ANDROID__"
+            ],
+            "compilerPath": "${userHome}/AppData/Local/Android/Sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/windows-x86_64/bin/clang++.exe",
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "windows-clang-x64"
         }
     ],
     "version": 4
