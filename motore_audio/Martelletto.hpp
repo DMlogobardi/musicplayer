@@ -36,14 +36,19 @@ public:
 
     //azzioni del martelletto
     void colpisci(size_t idxNota, const NotaData* nota, float velocity = 1.0f);
-    void rilascia(float tauSecondi = -1.0f);
+    void rilascia(float releaseVelocity = 0.5f, float profonditaPedale = 0.0f);
+    void smorzaDaRibattuto(float tauSecondi = 0.02f);
+    bool isSmorzamentoRibattuto() const { return smorzamento_ribattuto; }
     float suona();
 
 private:
     int id;
     size_t indice_nota = 0;
     const NotaData* nota_colpita;
-    const std::vector<float>* buffer_corrente = nullptr;
+    const std::vector<float>* buffer_layer_inf = nullptr;
+    const std::vector<float>* buffer_layer_sup = nullptr;
+    float peso_layer_inf = 1.0f;
+    float peso_layer_sup = 0.0f;
 
     float guadagno_velocity;
     float inviluppo = 1.0f;
@@ -62,6 +67,12 @@ private:
     float valore_residuo_pop = 0.0f;
     unsigned long long campioni_declick = 0;
     unsigned long long durata_declick = 88;
+    unsigned long long durata_attacco = 88;
+
+    float filtro_smorzatore_stato = 0.0f;
+    float alpha_smorzatore = 0.0f;
+    bool smorzamento_ribattuto = false;
+    bool attacco_da_ribattuto = false; // true solo se il Note-On interrompe una voce già attiva
 };
 
 #endif // MARTELLETTO_HPP

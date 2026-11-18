@@ -3,10 +3,14 @@
 #include <cmath>
 #include <algorithm>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 static constexpr float FREQ_SENZA_SMORZATORI = 1400.0f;
 
 Martelletto::Martelletto() 
-    : id(-1), nota_colpita(nullptr), buffer_corrente(nullptr), guadagno_velocity(0.0f), stato(StatoMartelletto::IDLE), indice_lettura(0) {}
+    : id(-1), nota_colpita(nullptr), buffer_layer_inf(nullptr), buffer_layer_sup(nullptr), peso_layer_inf(1.0f), peso_layer_sup(0.0f), guadagno_velocity(0.0f), stato(StatoMartelletto::IDLE), indice_lettura(0) {}
 
 // --- GETTER ---
 int Martelletto::getId() const {
@@ -53,6 +57,7 @@ void Martelletto::configura(int sampleRate) {
     sample_rate = sampleRate;
     lunghezza_fade = static_cast<unsigned long long>(0.005 * sample_rate); // 5ms fade-out
     durata_declick = static_cast<unsigned long long>(0.002 * sample_rate);
+    durata_attacco = static_cast<unsigned long long>(0.002 * sample_rate); // 2ms micro-attacco anti-click
 
     coef_livello = std::exp(-1.0f / (0.05f * static_cast<float>(sample_rate)));
 }
@@ -60,7 +65,10 @@ void Martelletto::configura(int sampleRate) {
 void Martelletto::reset() {
     stato = StatoMartelletto::IDLE;
     nota_colpita = nullptr;
-    buffer_corrente = nullptr;
+    buffer_layer_inf = nullptr;
+    buffer_layer_sup = nullptr;
+    peso_layer_inf = 1.0f;
+    peso_layer_sup = 0.0f;
     indice_lettura = 0;
     inviluppo = 0.0f;
     guadagno_velocity = 0.0f;
@@ -69,6 +77,10 @@ void Martelletto::reset() {
     campioni_declick = 0;
     indice_nota = 0;
     livello = 0.0f;
+    filtro_smorzatore_stato = 0.0f;
+    alpha_smorzatore = 0.0f;
+    smorzamento_ribattuto = false;
+    attacco_da_ribattuto = false;
 }
 
 void Martelletto::colpisci(size_t idxNota, const NotaData* nota, float velocity) {
@@ -82,22 +94,60 @@ void Martelletto::colpisci(size_t idxNota, const NotaData* nota, float velocity)
     if (nota->layers.empty()) return;
     float v_clamped = std::min(velocity, 1.0f);
 
-    size_t idx_layer = 0;
-    for (size_t i = 0; i < nota->layers.size(); ++i) {
-        if (v_clamped <= nota->layers[i].soglia_velocity) {
-            idx_layer = i;
-            break;
+    // Task 3: Crossfade continuo tra layer adiacenti per preservare la continuità timbrica
+    size_t numLayers = nota->layers.size();
+    size_t idx_inf = 0;
+    size_t idx_sup = 0;
+    float w_inf = 1.0f;
+    float w_sup = 0.0f;
+
+    if (numLayers == 1) {
+        idx_inf = 0;
+        idx_sup = 0;
+        w_inf = 1.0f;
+        w_sup = 0.0f;
+    } else if (v_clamped <= nota->layers.front().soglia_velocity) {
+        idx_inf = 0;
+        idx_sup = 0;
+        w_inf = 1.0f;
+        w_sup = 0.0f;
+    } else if (v_clamped >= nota->layers.back().soglia_velocity) {
+        idx_inf = numLayers - 1;
+        idx_sup = numLayers - 1;
+        w_inf = 1.0f;
+        w_sup = 0.0f;
+    } else {
+        for (size_t i = 0; i < numLayers - 1; ++i) {
+            float s_inf = nota->layers[i].soglia_velocity;
+            float s_sup = nota->layers[i + 1].soglia_velocity;
+            if (v_clamped >= s_inf && v_clamped <= s_sup) {
+                idx_inf = i;
+                idx_sup = i + 1;
+                float intervallo = s_sup - s_inf;
+                float t = (intervallo > 1e-5f) ? ((v_clamped - s_inf) / intervallo) : 0.0f;
+                w_sup = t;
+                w_inf = 1.0f - t;
+                break;
+            }
         }
-        idx_layer = i;
     }
 
-    const auto* target_buffer = &nota->layers[idx_layer].buffer_campioni;
+    buffer_layer_inf = &nota->layers[idx_inf].buffer_campioni;
+    buffer_layer_sup = &nota->layers[idx_sup].buffer_campioni;
+    peso_layer_inf = w_inf;
+    peso_layer_sup = w_sup;
 
-    if (target_buffer == nullptr || target_buffer->empty()) {
-        return; 
+    if ((buffer_layer_inf == nullptr || buffer_layer_inf->empty()) &&
+        (buffer_layer_sup == nullptr || buffer_layer_sup->empty())) {
+        return;
     }
 
-    if (stato != StatoMartelletto::IDLE) {
+    // Registra se il Note-On interrompe una voce già attiva (ribattuto/steal)
+    // Il flag guida la rampa d'attacco in suona(): solo i ribattuti la usano,
+    // i Note-On freschi lasciano passare il transiente d'impatto integro.
+    attacco_da_ribattuto = (stato != StatoMartelletto::IDLE);
+
+    if (attacco_da_ribattuto) {
         valore_residuo_pop = ultimo_campione_uscita;
         campioni_declick = durata_declick;
     } else {
@@ -107,8 +157,8 @@ void Martelletto::colpisci(size_t idxNota, const NotaData* nota, float velocity)
 
     indice_nota = idxNota;
     nota_colpita = nota;
-    buffer_corrente = target_buffer;
-    guadagno_velocity = std::pow(v_clamped, 2.0f);
+    // Calibrazione dinamica naturale: v^1.2 per evitare la doppia attenuazione nei pianissimo
+    guadagno_velocity = std::pow(v_clamped, 1.2f);
     livello = guadagno_velocity;
 
     guadagno_L = nota->guadagno_L;
@@ -117,52 +167,141 @@ void Martelletto::colpisci(size_t idxNota, const NotaData* nota, float velocity)
     stato = StatoMartelletto::IN_PERCUSSIONE;
     inviluppo = 1.0f;
     indice_lettura = 0; 
+    filtro_smorzatore_stato = 0.0f;
+    alpha_smorzatore = 0.0f;
+    smorzamento_ribattuto = false;
 }
 
-void Martelletto::rilascia(float tau) {
+void Martelletto::rilascia(float releaseVelocity, float profonditaPedale) {
     if (stato != StatoMartelletto::IN_PERCUSSIONE && stato != StatoMartelletto::IN_SUSTAIN) return;
 
     const float f = (nota_colpita != nullptr) ? nota_colpita->frequenza : 261.63f;
 
-    if (tau < 0.0f && f > FREQ_SENZA_SMORZATORI) {
-        coef_rilascio = 1.0f;   // niente feltro: la corda continua a decadere da sola
-    } else {
-        if (tau < 0.0f) {
-            // più grave = smorzatore più lento (Do2 ≈ 0.28 s, Do4 ≈ 0.12 s, Do6 ≈ 0.05 s)
-            tau = std::clamp(0.12f * std::pow(261.63f / f, 0.6f), 0.03f, 0.35f);
-        }
-        if (tau < 0.001f) tau = 0.001f;
-        coef_rilascio = std::exp(-1.0f / (tau * static_cast<float>(sample_rate)));
+    // Se la nota è nel registro acuto estremo (> 1400 Hz), non ci sono smorzatori meccanici
+    if (f > FREQ_SENZA_SMORZATORI) {
+        coef_rilascio = 1.0f;
+        alpha_smorzatore = 0.0f;
+        smorzamento_ribattuto = false;
+        stato = StatoMartelletto::IN_SMORZAMENTO;
+        return;
     }
+
+    // Se il pedale è premuto a fondo (P >= 0.85), la nota resta in sustain libero
+    if (profonditaPedale >= 0.85f) {
+        stato = StatoMartelletto::IN_SUSTAIN;
+        return;
+    }
+
+    // Tempo di decadimento base dipendente dal registro: Do2 ≈ 0.65s, Do3 ≈ 0.48s, Do4 ≈ 0.35s, Do5 ≈ 0.25s
+    float tau_base = std::clamp(0.35f * std::pow(261.63f / f, 0.45f), 0.12f, 0.85f);
+
+    // Task 5: Modulazione da Mezzo Pedale (0.15 < P < 0.85)
+    // Se il pedale è parzialmente abbassato, i feltri sfiorano la corda prolungando il decadimento
+    float fattore_pedale = 1.0f;
+    if (profonditaPedale > 0.15f) {
+        float t_pedale = (profonditaPedale - 0.15f) / 0.70f;
+        fattore_pedale = 1.0f + 4.0f * t_pedale; // Il decadimento si prolunga progressivamente fino a 5x
+    }
+
+    // Task 5: Modulazione da Release Velocity
+    // Rilascio lento (v_rel basso) -> feltro scende gradualmente (tau più lungo)
+    // Staccato violento (v_rel alto) -> feltro cade di colpo (tau più breve)
+    float v_rel = std::clamp(releaseVelocity, 0.05f, 1.0f);
+    float fattore_rilascio = 1.5f - 0.8f * v_rel; // Varia da 1.46x (lentissimo) a 0.70x (secchissimo)
+
+    float tau_effettivo = std::max(0.01f, tau_base * fattore_pedale * fattore_rilascio);
+    coef_rilascio = std::exp(-1.0f / (tau_effettivo * static_cast<float>(sample_rate)));
+
+    // Filtro passa-basso viscoelastico: nel mezzo pedale il feltro sfiora e taglia più alte frequenze
+    float cutoff_mult = (profonditaPedale > 0.15f) ? 2.0f : 3.5f;
+    float fc = std::clamp(f * cutoff_mult, 200.0f, 6000.0f);
+    float w = 2.0f * static_cast<float>(M_PI) * fc / static_cast<float>(sample_rate);
+    alpha_smorzatore = std::exp(-w);
+
+    smorzamento_ribattuto = false;
+    stato = StatoMartelletto::IN_SMORZAMENTO;
+}
+
+void Martelletto::smorzaDaRibattuto(float tauSecondi) {
+    if (stato == StatoMartelletto::IDLE) return;
+
+    const float f = (nota_colpita != nullptr) ? nota_colpita->frequenza : 261.63f;
+    if (tauSecondi < 0.001f) tauSecondi = 0.001f;
+
+    // Assorbimento ultra-rapido da feltro del martelletto (15-25 ms)
+    coef_rilascio = std::exp(-1.0f / (tauSecondi * static_cast<float>(sample_rate)));
+
+    // Taglio energico: il feltro del martelletto schiaccia la corda
+    float fc = std::clamp(f * 0.8f, 60.0f, 2000.0f);
+    float w = 2.0f * static_cast<float>(M_PI) * fc / static_cast<float>(sample_rate);
+    alpha_smorzatore = std::exp(-w);
+
+    smorzamento_ribattuto = true;
     stato = StatoMartelletto::IN_SMORZAMENTO;
 }
 
 
 float Martelletto::suona() {
-    if (stato == StatoMartelletto::IDLE || nota_colpita == nullptr || buffer_corrente == nullptr) {
+    if (stato == StatoMartelletto::IDLE || nota_colpita == nullptr || 
+        (buffer_layer_inf == nullptr && buffer_layer_sup == nullptr)) {
         return 0.0f;
     }
 
-    if (indice_lettura >= buffer_corrente->size()) {
-        stato = StatoMartelletto::IDLE;
-        nota_colpita = nullptr;
-        buffer_corrente = nullptr;
-        indice_lettura = 0;
+    bool fine_inf = (buffer_layer_inf == nullptr || indice_lettura >= buffer_layer_inf->size());
+    bool fine_sup = (buffer_layer_sup == nullptr || indice_lettura >= buffer_layer_sup->size());
+
+    if (fine_inf && fine_sup) {
+        reset();
         return 0.0f;
     }
 
-    float campione_base = (*buffer_corrente)[indice_lettura];
+    float s_inf = (!fine_inf) ? (*buffer_layer_inf)[indice_lettura] : 0.0f;
+    float s_sup = (!fine_sup) ? (*buffer_layer_sup)[indice_lettura] : 0.0f;
+    float campione_base = peso_layer_inf * s_inf + peso_layer_sup * s_sup;
 
-    unsigned long long restanti = buffer_corrente->size() - indice_lettura;
-    if (restanti < lunghezza_fade) {
-        float fade_factor = static_cast<float>(restanti) / static_cast<float>(lunghezza_fade);
-        campione_base *= fade_factor;
+    // --- MICRO-RAMPA DI ATTACCO (Anti-Click) — solo per ribattuti/steal ---
+    // Nei Note-On freschi (da IDLE) il transiente fisico del martelletto deve uscire
+    // integro: il buffer parte già con la fisica del colpo, non va soffocato.
+    // La rampa coseno serve SOLO quando il martelletto interrompe una voce già attiva
+    // (ribattuto o voice-stealing), dove il declick crossfade ha bisogno che il segnale
+    // in ingresso parta da zero per raccordarsi con il residuo della voce precedente.
+    if (attacco_da_ribattuto && indice_lettura < durata_attacco) {
+        float f_att = static_cast<float>(indice_lettura) / static_cast<float>(durata_attacco);
+        float rampa = 0.5f * (1.0f - std::cos(f_att * static_cast<float>(M_PI)));
+        campione_base *= rampa;
+    }
+
+    size_t dim_max = 0;
+    if (buffer_layer_inf) dim_max = std::max(dim_max, buffer_layer_inf->size());
+    if (buffer_layer_sup) dim_max = std::max(dim_max, buffer_layer_sup->size());
+
+    if (dim_max > indice_lettura) {
+        unsigned long long restanti = dim_max - indice_lettura;
+        if (restanti < lunghezza_fade) {
+            float fade_factor = static_cast<float>(restanti) / static_cast<float>(lunghezza_fade);
+            campione_base *= fade_factor;
+        }
     }
 
     indice_lettura++;
 
+    float campione_processato = campione_base;
+
     if (stato == StatoMartelletto::IN_SMORZAMENTO) {
-        inviluppo *= coef_rilascio;   // Decadimento rapido (smorzatore in feltro)
+        inviluppo *= coef_rilascio;   // Decadimento ampiezza generale
+
+        // Filtro passa-basso a polo singolo: y[n] = (1 - alpha) * x[n] + alpha * y[n-1]
+        if (alpha_smorzatore > 0.0f) {
+            filtro_smorzatore_stato = (1.0f - alpha_smorzatore) * campione_base + alpha_smorzatore * filtro_smorzatore_stato;
+            // Protezione denormali sullo stato del filtro IIR
+            if (std::abs(filtro_smorzatore_stato) < 1e-15f) {
+                filtro_smorzatore_stato = 0.0f;
+            }
+            campione_processato = filtro_smorzatore_stato;
+        }
+    } else {
+        // Mantiene la memoria del filtro allineata al campione corrente per evitare salti di fase
+        filtro_smorzatore_stato = campione_base;
     }
 
     if (inviluppo < 1e-5f) {
@@ -170,7 +309,7 @@ float Martelletto::suona() {
         return 0.0f;
     }
 
-    float uscita_corrente = campione_base * guadagno_velocity * inviluppo;
+    float uscita_corrente = campione_processato * guadagno_velocity * inviluppo;
 
     if (campioni_declick > 0) {
         float fattore_declick = static_cast<float>(campioni_declick) / static_cast<float>(durata_declick);
@@ -180,6 +319,7 @@ float Martelletto::suona() {
 
     ultimo_campione_uscita = uscita_corrente;
     livello = std::max(std::abs(uscita_corrente), livello * coef_livello);
+    if (livello < 1e-6f) livello = 0.0f; // Protezione denormali sul peak follower
 
     return uscita_corrente;
 }
