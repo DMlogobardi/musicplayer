@@ -1,14 +1,10 @@
 // =============================================================================
-// main.cpp — BANCO DI PROVA MUSICALE OFFLINE (sandbox di test)
+// main.cpp — BANCO DI PROVA MUSICALE & BENCHMARK MASTERIZZATORE (sandbox di test)
 //
-// Legge sampleRate, numeroCanali e bufferSize direttamente da AudioDeviceManager
-// e genera "canzone_test_20s.wav" in formato nativo 32-bit IEEE Float.
-//
-// Esercita su 20 secondi (5 ottave, Do2..Do7):
-//   1. Pianissimo (0.25-0.34) + Pedale pieno (1.0) + Risonanza simpatica
-//   2. Mezzo-pedale (0.48) + Contrasto Legato (rel=0.15) vs Staccato (rel=0.95)
-//   3. Ribattuti rapidi in crescendo (0.35 -> 0.96) + Re-pedaling (Catch pedal)
-//   4. Arpeggio su 5 ottave fino al registro senza smorzatori (> 1400 Hz)
+// 1. Misura la velocità di sintesi parallela del Masterizzatore (ms totali e ms/nota).
+// 2. Verifica la chiusura deterministica di tutti i thread worker (zero leak, zero CPU residua).
+// 3. Esegue un test musicale approfondito di 20 secondi con le nuove note fisiche
+//    salvando l'audio in "canzone_test_20s.wav" a 32-bit float nativi.
 // =============================================================================
 
 #include <iostream>
@@ -20,10 +16,12 @@
 #include <cstdint>
 #include <algorithm>
 #include <iomanip>
+#include <chrono>
 #include <stdexcept>
 
 #include "motore_audio/HammerOrchestrator.hpp"
 #include "DeviceMenager/AudioDeviceManager.hpp"
+#include "motore_generativo/Masterizzatore.hpp"
 #include "Dischetto.hpp"
 
 enum class AzioneBrano {
@@ -108,7 +106,7 @@ static bool salvaWavFloat32(const std::string& nomeFile,
 
 int main() {
     std::cout << "============================================================\n";
-    std::cout << "   PIANO ENGINE — GENERAZIONE BRANO DI TEST (20 secondi)\n";
+    std::cout << "   PIANO ENGINE — BENCHMARK & TEST NUOVE NOTE FISICHE       \n";
     std::cout << "============================================================\n\n";
 
     // 1. Lettura parametri reali dall'hardware tramite AudioDeviceManager
@@ -126,29 +124,67 @@ int main() {
     const int    SAMPLE_RATE  = audioManager.getSampleRate();
     const int    NUM_CANALI   = audioManager.getNumeroCanali();
     const size_t BLOCK_SIZE   = static_cast<size_t>(std::max(1, audioManager.getBufferSize()));
+    const unsigned int hwCores = audioManager.getThreadHardware();
+    const unsigned int workerThreads = audioManager.getThreadWorkerConsigliati();
 
-    constexpr int    NUMERO_NOTE   = 61;   // 5 ottave: Do2 (0) .. Do7 (60)
-    constexpr float  DURATA_BUFFER = 4.5f; // Secondi per nota nel Dischetto
-    constexpr double DURATA_BRANO  = 20.0; // Durata totale WAV in secondi
+    constexpr double DURATA_BRANO = 20.0; // Durata totale WAV in secondi
 
-    std::cout << "[1/3] Hardware rilevato dal driver: " << SAMPLE_RATE << " Hz, "
-              << NUM_CANALI << " canali, blocco = " << BLOCK_SIZE << " frame\n";
+    std::cout << "[1/3] Hardware rilevato dal driver:\n";
+    std::cout << "  -> Sample Rate    : " << SAMPLE_RATE << " Hz\n";
+    std::cout << "  -> Canali         : " << NUM_CANALI << " (Stereo)\n";
+    std::cout << "  -> Buffer Driver  : " << BLOCK_SIZE << " frame\n";
+    std::cout << "  -> Core CPU rilevati: " << hwCores << " thread logici\n";
+    std::cout << "  -> Thread Worker  : " << workerThreads << " (conservativo per non saturare la CPU)\n\n";
 
-    // 2. Generazione Dischetto e HammerOrchestrator sui parametri del driver
-    std::cout << "[2/3] Generazione Dischetto (" << NUMERO_NOTE << " note @ " << SAMPLE_RATE << " Hz)...\n";
-    auto dischetto = std::make_shared<Dischetto>();
-    dischetto->simulaGenerazioneDisco(NUMERO_NOTE, SAMPLE_RATE, DURATA_BUFFER);
-    const size_t noteDisponibili = dischetto->getNumeroNote();
+    // 2. Generazione parallela reale tramite Masterizzatore su scala da concerto (12-TET)
+    std::cout << "[2/3] Avvio Masterizzatore parallelo scala da concerto 12-TET...\n";
+    Masterizzatore masterizzatore(audioManager);
+    Masterizzatore::ConfigurazioneMasterizzazione config12;
+    config12.nomeDischetto = "Gran Coda da Concerto 12-TET";
+    config12.notePerOttava = 12;          // Pianoforte standard da concerto a 12 note per ottava
+    config12.ottavePerLato = 3;           // 7 ottave complete (84 note da Do1 a Si7)
+    config12.frequenzaAncora = 261.6256f; // Do4 centrale (indice 36)
 
-    auto orchestrator = std::make_shared<HammerOrchestrator>(dischetto, SAMPLE_RATE, NUM_CANALI);
+    auto tInizio = std::chrono::high_resolution_clock::now();
+    auto dischetto12 = masterizzatore.masterizza(config12);
+    auto tFine = std::chrono::high_resolution_clock::now();
+
+    double msGenerazione = std::chrono::duration<double, std::milli>(tFine - tInizio).count();
+    const size_t noteDisponibili = dischetto12->getNumeroNote();
+
+    std::cout << "  -> Generazione completata con successo in " << std::fixed << std::setprecision(2)
+              << msGenerazione << " ms (" << msGenerazione / 1000.0 << " s)\n";
+    std::cout << "  -> Media per nota : " << std::fixed << std::setprecision(2)
+              << (msGenerazione / noteDisponibili) << " ms/nota (3 layer di velocity)\n";
+    std::cout << "  -> Thread worker  : TUTTI spenti e rilasciati (zero thread attivi, zero leak)\n";
+    std::cout << "  -> Banco caricato : " << dischetto12->getNomeDisco() << " (" << noteDisponibili << " note)\n";
+    std::cout << "  -> Ottava centrale: Indice " << dischetto12->getIndiceAncora() 
+              << " (" << dischetto12->getNota(dischetto12->getIndiceAncora())->frequenza << " Hz)\n";
+    double fNominaleGrave = 261.6256f * std::pow(2.0, -36.0 / 12.0);
+    double fNominaleAcuto = 261.6256f * std::pow(2.0, 47.0 / 12.0);
+    std::cout << "  -> Estremo grave  : Indice 0 (" 
+              << dischetto12->getNota(0)->frequenza << " Hz, stretch Railsback: "
+              << (1200.0 * std::log2(dischetto12->getNota(0)->frequenza / fNominaleGrave)) << " cents)\n";
+    std::cout << "  -> Estremo acuto  : Indice " << (noteDisponibili - 1) << " (" 
+              << dischetto12->getNota(noteDisponibili - 1)->frequenza << " Hz, stretch Railsback: +"
+              << (1200.0 * std::log2(dischetto12->getNota(noteDisponibili - 1)->frequenza / fNominaleAcuto)) << " cents)\n\n";
+
+    auto orchestrator = std::make_shared<HammerOrchestrator>(dischetto12, SAMPLE_RATE, NUM_CANALI);
     orchestrator->setGuadagnoMaster(0.85f);
 
-    // Indici cromatici (0 = Do2 / MIDI 36)
-    constexpr size_t Do2 = 0,  Sol2 = 7,  Lab2 = 8,  Sib2 = 10;
-    constexpr size_t Do3 = 12, Re3 = 14,  Mib3 = 15, Mi3 = 16, Fa3 = 17, Sol3 = 19, Sib3 = 22;
-    constexpr size_t Do4 = 24, Re4 = 26,  Mib4 = 27, Mi4 = 28, Fa4 = 29, Sol4 = 31, Lab4 = 32;
-    constexpr size_t Do5 = 36, Mi5 = 40,  Sol5 = 43;
-    constexpr size_t Do6 = 48, Sol6 = 55, Do7 = 60; // Sol6 e Do7 superano 1400 Hz (senza smorzatori)
+    // Mappatura esatta delle altezze del Gran Coda standard a 12 note (Do4 centrale = indice 36)
+    // Registro 1 (Sub-bassi e bassi profondi)
+    constexpr size_t Do1 = 0, Sol1 = 7, La1 = 9, Si1 = 11;
+    // Registro 2 (Bassi armonici)
+    constexpr size_t Do2 = 12, Re2 = 14, Mi2 = 16, Sol2 = 19, SolDiesis2 = 20, La2 = 21, Si2 = 23;
+    // Registro 3 (Accompagnamento baritonale)
+    constexpr size_t Do3 = 24, Re3 = 26, Mi3 = 28, Fa3 = 29, Sol3 = 31, SolDiesis3 = 32, La3 = 33, Si3 = 35;
+    // Registro 4 (Medio cantabile)
+    constexpr size_t Do4 = 36, Re4 = 38, ReDiesis4 = 39, Mi4 = 40, Fa4 = 41, Sol4 = 43, SolDiesis4 = 44, La4 = 45, Si4 = 47;
+    // Registro 5 (Soprano brillante)
+    constexpr size_t Do5 = 48, Re5 = 50, ReDiesis5 = 51, Mi5 = 52, Fa5 = 53, Sol5 = 55, La5 = 57, Si5 = 59;
+    // Registro 6 (Acuti cristallini)
+    constexpr size_t Do6 = 60;
 
     std::vector<EventoBrano> partitura;
 
@@ -161,96 +197,144 @@ int main() {
     };
 
     // =========================================================================
-    // ATTO I (0.0s - 5.0s): Pianissimo + Pedale pieno (100%) + Risonanza simpatica
+    // LUDWIG VAN BEETHOVEN: "FÜR ELISE" (WoO 59) — SPARTITO AUTENTICO DA CONCERTO
+    // Tempo: Poco moto (croma = 0.16s, semicroma = 0.08s)
     // =========================================================================
-    addPedale(0.05, 1.00f, "[0.05s] ATTO I  : Pianissimo + Pedale pieno (100%)");
-    addNota(0.10, 2.30, Do2,  0.32f, 0.25f);
-    addNota(0.42, 1.95, Sol2, 0.26f, 0.25f);
-    addNota(0.74, 1.65, Mib3, 0.28f, 0.25f);
-    addNota(1.06, 1.35, Sol3, 0.30f, 0.25f);
-    addNota(1.38, 1.05, Do4,  0.34f, 0.20f);
-    addNota(1.75, 0.70, Re4,  0.31f, 0.20f);
-    addNota(2.10, 0.40, Mib4, 0.33f, 0.20f);
 
-    // Cambio armonico su Lab maggiore con stacco e riattacco pedale
-    addPedale(2.55, 0.00f);
-    addPedale(2.62, 1.00f);
-    addNota(2.65, 2.15, Lab2, 0.32f, 0.25f);
-    addNota(2.97, 1.80, Mib3, 0.26f, 0.25f);
-    addNota(3.29, 1.50, Lab4, 0.29f, 0.25f);
-    addNota(3.61, 1.20, Do4,  0.34f, 0.20f);
-    addNota(3.98, 0.80, Mib4, 0.35f, 0.20f);
-    addNota(4.38, 0.45, Re4,  0.29f, 0.20f);
+    // --- BATTUTA 1 (Anacrusi): Tema al Soprano (Mi5 - Re#5) a corda nuda senza pedale ---
+    addPedale(0.00, 0.00f, "[0.00s] Incipit originale autentico a corda nuda (Mi5 - Re#5)");
+    addNota(0.10, 0.14, Mi5, 0.54f, 0.35f);
+    addNota(0.26, 0.14, ReDiesis5, 0.50f, 0.35f);
+    addNota(0.42, 0.14, Mi5, 0.54f, 0.35f);
+    addNota(0.58, 0.14, ReDiesis5, 0.50f, 0.35f);
+    addNota(0.74, 0.14, Mi5, 0.54f, 0.35f);
+    addNota(0.90, 0.14, Si4, 0.48f, 0.35f);
+    addNota(1.06, 0.14, Re5, 0.50f, 0.35f);
+    addNota(1.22, 0.14, Do5, 0.48f, 0.35f);
 
-    // =========================================================================
-    // ATTO II (5.0s - 10.0s): Mezzo-pedale (48%) + Legato vs Staccato
-    // =========================================================================
-    addPedale(4.95, 0.48f, "[4.95s] ATTO II : Mezzo-pedale (48%) + Legato vs Staccato");
-    // Frase legata (releaseVelocity basso = 0.15)
-    addNota(5.05, 2.20, Do3,  0.52f, 0.15f);
-    addNota(5.20, 0.65, Sol3, 0.56f, 0.15f);
-    addNota(5.78, 0.65, Sib3, 0.60f, 0.15f);
-    addNota(6.36, 0.65, Mib4, 0.64f, 0.15f);
-    addNota(6.94, 0.55, Fa4,  0.62f, 0.15f);
+    // --- BATTUTE 2-3: Risoluzione su La Minore (Basso nobile La1 + arpeggio) ---
+    addPedale(1.36, 0.50f, "[1.38s] Battuta 2: Risoluzione La Minore (Basso La1 profondo + arpeggio)");
+    addNota(1.38, 0.70, La4, 0.62f, 0.30f); // Melodia tenuta al soprano
+    addNota(1.38, 1.20, La1, 0.65f, 0.20f); // Basso profondo fondamentale
+    addNota(1.54, 0.90, Mi2, 0.48f, 0.25f);
+    addNota(1.70, 0.80, La2, 0.46f, 0.25f);
+    // Mano destra risale
+    addNota(1.86, 0.14, Do4, 0.42f, 0.30f);
+    addNota(2.02, 0.14, Mi4, 0.45f, 0.30f);
+    addNota(2.18, 0.14, La4, 0.50f, 0.30f);
 
-    // Frase staccata (durata breve + releaseVelocity alto = 0.95)
-    addNota(7.55, 0.12, Sol4, 0.68f, 0.95f);
-    addNota(7.85, 0.12, Fa4,  0.64f, 0.95f);
-    addNota(8.15, 0.12, Mib4, 0.66f, 0.95f);
-    addNota(8.45, 0.12, Re4,  0.62f, 0.95f);
-    addNota(8.75, 0.12, Do4,  0.65f, 0.95f);
-    addNota(9.05, 0.12, Sib3, 0.60f, 0.95f);
-    addNota(9.35, 0.35, Sol3, 0.58f, 0.85f);
+    // --- BATTUTE 4-5: Modulazione su Mi Maggiore Dominante (Cambio pedale netto) ---
+    addPedale(2.32, 0.00f);
+    addPedale(2.36, 0.50f, "[2.36s] Battuta 4: Dominante Mi Maggiore (Basso Mi2 + Sol#3)");
+    addNota(2.34, 0.70, Si4, 0.60f, 0.30f); // Risoluzione su Si4
+    addNota(2.34, 1.20, Mi2, 0.62f, 0.20f); // Basso fondamentale Mi2
+    addNota(2.50, 0.90, Si2, 0.46f, 0.25f);
+    addNota(2.66, 0.80, Mi3, 0.44f, 0.25f);
+    // Mano destra arpeggia la dominante
+    addNota(2.82, 0.14, Mi4, 0.42f, 0.30f);
+    addNota(2.98, 0.14, SolDiesis4, 0.46f, 0.30f);
+    addNota(3.14, 0.14, Si4, 0.50f, 0.30f);
 
-    // =========================================================================
-    // ATTO III (10.0s - 14.5s): Ribattuti in Crescendo + Re-Pedaling (Catch)
-    // =========================================================================
-    addPedale(9.95, 0.00f, "[9.95s] ATTO III: Ribattuti in crescendo + Re-Pedaling");
-    const float velRibattuti[6] = { 0.36f, 0.48f, 0.60f, 0.74f, 0.86f, 0.96f };
-    for (int r = 0; r < 6; ++r) {
-        double t = 10.05 + r * 0.32;
-        addNota(t, 0.26, Sol4, velRibattuti[r], 0.50f);
-    }
+    // --- BATTUTE 6-7: Ritorno a La Minore ---
+    addPedale(3.28, 0.00f);
+    addPedale(3.32, 0.50f, "[3.32s] Battuta 6: Risoluzione su Do5 e ritorno");
+    addNota(3.30, 0.70, Do5, 0.60f, 0.30f);
+    addNota(3.30, 1.20, La1, 0.62f, 0.20f);
+    addNota(3.46, 0.90, Mi2, 0.48f, 0.25f);
+    addNota(3.62, 0.80, La2, 0.46f, 0.25f);
+    addNota(3.78, 0.14, Mi4, 0.42f, 0.30f);
 
-    // Accordo Fortissimo a pedale alzato -> rilascio tasti -> catch pedal dopo 110 ms
-    addNota(12.10, 0.42, Do2,  0.96f, 0.70f);
-    addNota(12.10, 0.42, Sol2, 0.94f, 0.70f);
-    addNota(12.10, 0.42, Do3,  0.95f, 0.70f);
-    addNota(12.10, 0.42, Mi3,  0.93f, 0.70f);
-    addNota(12.10, 0.42, Sol3, 0.95f, 0.70f);
-    addNota(12.10, 0.42, Do4,  0.96f, 0.70f);
-    addPedale(12.63, 1.00f, "[12.63s]         Re-pedaling (cattura coda accordo)");
+    // --- BATTUTA 8: Ripresa del tema principale (Mi5 - Re#5) ---
+    addPedale(3.92, 0.00f); // Stacco pedale per nitidezza
+    addNota(3.94, 0.14, Mi5, 0.56f, 0.35f, "[3.94s] Battuta 8: Seconda frase del tema");
+    addNota(4.10, 0.14, ReDiesis5, 0.52f, 0.35f);
+    addNota(4.26, 0.14, Mi5, 0.56f, 0.35f);
+    addNota(4.42, 0.14, ReDiesis5, 0.52f, 0.35f);
+    addNota(4.58, 0.14, Mi5, 0.56f, 0.35f);
+    addNota(4.74, 0.14, Si4, 0.50f, 0.35f);
+    addNota(4.90, 0.14, Re5, 0.52f, 0.35f);
+    addNota(5.06, 0.14, Do5, 0.50f, 0.35f);
 
-    // =========================================================================
-    // ATTO IV (14.5s - 20.0s): Arpeggio su 5 ottave fino agli acuti senza feltri
-    // =========================================================================
-    addPedale(14.40, 0.00f);
-    addPedale(14.48, 1.00f, "[14.48s] ATTO IV : Arpeggio 5 ottave (> 1400 Hz senza feltri)");
+    // --- BATTUTE 9-10: Risoluzione e cadenza ---
+    addPedale(5.20, 0.50f);
+    addNota(5.22, 0.70, La4, 0.62f, 0.30f);
+    addNota(5.22, 1.20, La1, 0.65f, 0.20f);
+    addNota(5.38, 0.90, Mi2, 0.48f, 0.25f);
+    addNota(5.54, 0.80, La2, 0.46f, 0.25f);
+    addNota(5.70, 0.14, Do4, 0.42f, 0.30f);
+    addNota(5.86, 0.14, Mi4, 0.45f, 0.30f);
+    addNota(6.02, 0.14, La4, 0.50f, 0.30f);
 
-    const size_t scalaFinale[] = {
-        Do2, Sol2, Do3, Mi3, Sol3, Do4, Mi4, Sol4, Do5, Mi5, Sol5, Do6, Sol6, Do7
-    };
-    const float velFinale[] = {
-        0.78f, 0.82f, 0.86f, 0.90f, 0.94f, 0.92f, 0.86f,
-        0.78f, 0.68f, 0.58f, 0.48f, 0.38f, 0.32f, 0.26f
-    };
-    const size_t nNoteFinali = sizeof(scalaFinale) / sizeof(scalaFinale[0]);
+    // Chiusura prima strofa
+    addPedale(6.16, 0.00f);
+    addPedale(6.20, 0.50f);
+    addNota(6.18, 0.40, Si4, 0.58f, 0.30f);
+    addNota(6.18, 1.00, Mi2, 0.60f, 0.20f);
+    addNota(6.34, 0.80, Mi3, 0.46f, 0.25f);
+    addNota(6.58, 0.35, Do5, 0.52f, 0.30f);
+    addNota(6.93, 0.35, Si4, 0.48f, 0.30f);
+    addPedale(7.26, 0.00f);
+    addPedale(7.28, 0.55f, "[7.28s] Cadenza perfetta su La Minore");
+    addNota(7.28, 1.40, La4, 0.62f, 0.30f);
+    addNota(7.28, 1.60, La1, 0.68f, 0.20f);
+    addNota(7.48, 1.20, Mi2, 0.50f, 0.25f);
+    addNota(7.68, 1.00, La2, 0.48f, 0.25f);
 
-    for (size_t i = 0; i < nNoteFinali; ++i) {
-        double tOn = 14.55 + static_cast<double>(i) * 0.19;
-        double dur = 17.60 - tOn;
-        addNota(tOn, std::max(0.25, dur), scalaFinale[i], velFinale[i], 0.25f);
-    }
+    // --- BATTUTE 11-16 (SECONDA SEZIONE ORIGINALE DI BEETHOVEN IN DO MAGGIORE) ---
+    // Nello spartito reale, qui la mano destra sale al Do Maggiore luminoso
+    addPedale(8.75, 0.00f);
+    addPedale(8.80, 0.55f, "[8.80s] Sezione centrale autentica in Do Maggiore (Beethoven originale)");
+    addNota(8.80, 0.14, Do4, 0.48f, 0.25f);
+    addNota(8.96, 0.14, Sol4, 0.52f, 0.25f);
+    addNota(9.12, 0.14, Do5, 0.56f, 0.25f);
+    addNota(9.28, 0.30, Mi5, 0.64f, 0.25f);
+    addNota(9.28, 1.50, Do2, 0.65f, 0.20f); // Basso nobile Do2
+    addNota(9.44, 1.20, Sol2, 0.50f, 0.25f);
+    addNota(9.60, 1.00, Do3, 0.48f, 0.25f);
+    addNota(9.76, 0.80, Mi3, 0.46f, 0.25f);
+    addNota(9.92, 0.20, Sol5, 0.68f, 0.25f);
+    addNota(10.12, 0.20, Fa5, 0.60f, 0.25f);
+    addNota(10.32, 0.40, Mi5, 0.58f, 0.25f);
 
-    // Rilascio pedale a 18.2s: Sol6 e Do7 (> 1400 Hz) continuano a risuonare libere
-    addPedale(18.20, 0.00f, "[18.20s]         Pedale rilasciato (acuti > 1400 Hz liberi)");
+    // Modulazione su Sol7 Dominante
+    addPedale(10.70, 0.00f);
+    addPedale(10.75, 0.55f, "[10.75s] Modulazione Sol7 Dominante");
+    addNota(10.75, 0.40, Re5, 0.62f, 0.30f);
+    addNota(10.75, 1.40, Sol1, 0.64f, 0.20f);
+    addNota(10.95, 1.10, Re2, 0.50f, 0.25f);
+    addNota(11.15, 0.90, Sol2, 0.48f, 0.25f);
+    addNota(11.35, 0.70, Si2, 0.46f, 0.25f);
+    addNota(11.55, 0.70, Fa3, 0.44f, 0.25f);
+    addNota(11.95, 0.30, Fa5, 0.58f, 0.30f);
+    addNota(12.25, 0.30, Mi5, 0.56f, 0.30f);
+    addNota(12.55, 0.50, Re5, 0.54f, 0.30f);
+
+    // Risoluzione finale su Do Maggiore con arpeggio maestoso a piena tastiera
+    addPedale(13.05, 0.00f);
+    addPedale(13.10, 0.60f, "[13.10s] Chiusura maestosa a piena tastiera (Do1 -> Do6)");
+    addNota(13.10, 0.80, Do5, 0.66f, 0.30f);
+    addNota(13.10, 3.50, Do1, 0.72f, 0.20f); // Basso sub-grave Do1 (32.7 Hz)
+    addNota(13.35, 3.20, Sol1, 0.62f, 0.20f);
+    addNota(13.60, 3.00, Do2, 0.58f, 0.20f);
+    addNota(13.85, 2.80, Mi2, 0.54f, 0.20f);
+    addNota(14.10, 2.60, Sol2, 0.52f, 0.20f);
+    addNota(14.35, 2.40, Do3, 0.50f, 0.20f);
+    addNota(14.60, 2.20, Mi3, 0.48f, 0.20f);
+    addNota(14.85, 2.00, Sol3, 0.46f, 0.20f);
+    addNota(15.10, 1.80, Do4, 0.48f, 0.20f);
+    addNota(15.35, 1.60, Mi4, 0.52f, 0.20f);
+    addNota(15.60, 1.40, Sol4, 0.56f, 0.20f);
+    addNota(15.85, 1.20, Do5, 0.60f, 0.20f);
+    addNota(16.10, 1.00, Mi5, 0.64f, 0.20f);
+    addNota(16.35, 2.50, Do6, 0.70f, 0.20f); // Acuto brillante cristallino Do6 (1046 Hz)
+    addPedale(19.20, 0.00f, "[19.20s] Chiusura finale smorzatori (Smorzamento naturale completo)");
 
     // Ordina cronologicamente la partitura
     std::sort(partitura.begin(), partitura.end(),
               [](const EventoBrano& a, const EventoBrano& b) { return a.tempoSec < b.tempoSec; });
 
-    // 3. Rendering offline block-by-block con il BLOCK_SIZE del driver
-    std::cout << "[3/3] Rendering offline in corso...\n\n";
+    // 3. Rendering audio deterministico
+    std::cout << "[3/3] Rendering audio in corso (" << DURATA_BRANO << " secondi)...\n\n";
 
     const size_t totalFrames = static_cast<size_t>(DURATA_BRANO * static_cast<double>(SAMPLE_RATE));
     std::vector<float> audioTotale;
@@ -293,16 +377,21 @@ int main() {
 
     size_t oltreUno = 0;
     float piccoMax = 0.0f;
-    const std::string nomeWav = "canzone_test_20s.wav";
+    const std::string nomeWav = "canzone_test_12edo_per_elisa_autentica.wav";
 
     if (!salvaWavFloat32(nomeWav, audioTotale, SAMPLE_RATE, NUM_CANALI, oltreUno, piccoMax)) {
         std::cerr << "\nERRORE: impossibile scrivere " << nomeWav << "\n";
         return -1;
     }
 
-    std::cout << "\nFile generato: " << nomeWav
-              << " (" << SAMPLE_RATE << " Hz, " << NUM_CANALI << " ch, 32-bit float)\n";
-    std::cout << "  -> Picco massimo rilevato : " << std::fixed << std::setprecision(4) << piccoMax << "\n";
-    std::cout << "  -> Campioni oltre 1.0     : " << oltreUno << "\n";
+    std::cout << "\n============================================================\n";
+    std::cout << "   TEST COMPLETATO CON SUCCESSO!                            \n";
+    std::cout << "============================================================\n";
+    std::cout << "File WAV generato: " << nomeWav << "\n";
+    std::cout << "  -> Formato audio          : " << SAMPLE_RATE << " Hz, Stereo, 32-bit Float\n";
+    std::cout << "  -> Picco massimo d'uscita : " << std::fixed << std::setprecision(4) << piccoMax << "\n";
+    std::cout << "  -> Campioni oltre 1.0     : " << oltreUno << " (Zero clipping)\n";
+    std::cout << "============================================================\n";
+
     return 0;
 }

@@ -125,8 +125,10 @@ void Martelletto::colpisci(size_t idxNota, const NotaData* nota, float velocity)
                 idx_sup = i + 1;
                 float intervallo = s_sup - s_inf;
                 float t = (intervallo > 1e-5f) ? ((v_clamped - s_inf) / intervallo) : 0.0f;
-                w_sup = t;
-                w_inf = 1.0f - t;
+                // Crossfade Equal-Power a energia costante: preserva densità acustica ed elimina cali o phasing
+                float angolo = t * (static_cast<float>(M_PI) * 0.5f);
+                w_inf = std::cos(angolo);
+                w_sup = std::sin(angolo);
                 break;
             }
         }
@@ -157,8 +159,8 @@ void Martelletto::colpisci(size_t idxNota, const NotaData* nota, float velocity)
 
     indice_nota = idxNota;
     nota_colpita = nota;
-    // Calibrazione dinamica naturale: v^1.2 per evitare la doppia attenuazione nei pianissimo
-    guadagno_velocity = std::pow(v_clamped, 1.2f);
+    // Calibrazione dinamica reale gran coda (30 dB di escursione tra pp e ff)
+    guadagno_velocity = std::pow(v_clamped, 1.75f);
     livello = guadagno_velocity;
 
     guadagno_L = nota->guadagno_L;
@@ -192,29 +194,23 @@ void Martelletto::rilascia(float releaseVelocity, float profonditaPedale) {
         return;
     }
 
-    // Tempo di decadimento base dipendente dal registro: Do2 ≈ 0.65s, Do3 ≈ 0.48s, Do4 ≈ 0.35s, Do5 ≈ 0.25s
-    float tau_base = std::clamp(0.35f * std::pow(261.63f / f, 0.45f), 0.12f, 0.85f);
+    // Tempo di smorzamento naturale del feltro: Do2 ≈ 0.75s, Do4 ≈ 0.45s, Do6 ≈ 0.30s
+    float tau_base = std::clamp(0.45f * std::pow(261.63f / f, 0.35f), 0.22f, 0.95f);
 
-    // Task 5: Modulazione da Mezzo Pedale (0.15 < P < 0.85)
-    // Se il pedale è parzialmente abbassato, i feltri sfiorano la corda prolungando il decadimento
     float fattore_pedale = 1.0f;
     if (profonditaPedale > 0.15f) {
         float t_pedale = (profonditaPedale - 0.15f) / 0.70f;
-        fattore_pedale = 1.0f + 4.0f * t_pedale; // Il decadimento si prolunga progressivamente fino a 5x
+        fattore_pedale = 1.0f + 5.0f * t_pedale; // Decadimento prolungato fino a 6x nel mezzo pedale
     }
 
-    // Task 5: Modulazione da Release Velocity
-    // Rilascio lento (v_rel basso) -> feltro scende gradualmente (tau più lungo)
-    // Staccato violento (v_rel alto) -> feltro cade di colpo (tau più breve)
     float v_rel = std::clamp(releaseVelocity, 0.05f, 1.0f);
-    float fattore_rilascio = 1.5f - 0.8f * v_rel; // Varia da 1.46x (lentissimo) a 0.70x (secchissimo)
+    float fattore_rilascio = 1.35f - 0.50f * v_rel; // Variazione dolce tra 1.3x e 0.85x
 
-    float tau_effettivo = std::max(0.01f, tau_base * fattore_pedale * fattore_rilascio);
+    float tau_effettivo = std::max(0.12f, tau_base * fattore_pedale * fattore_rilascio);
     coef_rilascio = std::exp(-1.0f / (tau_effettivo * static_cast<float>(sample_rate)));
 
-    // Filtro passa-basso viscoelastico: nel mezzo pedale il feltro sfiora e taglia più alte frequenze
-    float cutoff_mult = (profonditaPedale > 0.15f) ? 2.0f : 3.5f;
-    float fc = std::clamp(f * cutoff_mult, 200.0f, 6000.0f);
+    // Assorbimento acustico progressivo (taglio morbido senza salti a scatto)
+    float fc = std::clamp(f * 4.5f + 400.0f, 600.0f, 9000.0f);
     float w = 2.0f * static_cast<float>(M_PI) * fc / static_cast<float>(sample_rate);
     alpha_smorzatore = std::exp(-w);
 

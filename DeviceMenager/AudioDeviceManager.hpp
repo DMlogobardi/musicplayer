@@ -6,6 +6,7 @@
 #include "IAudioDriver.hpp"
 #include <memory>
 #include <atomic>
+#include <thread>
 
 class AudioDeviceManager {
 public:
@@ -22,6 +23,17 @@ public:
     int getSampleRate() const { return sampleRate; }
     int getBufferSize() const { return bufferSize; }
     int getNumeroCanali() const { return numeroCanali; }
+
+    unsigned int getThreadHardware() const {
+        unsigned int hw = std::thread::hardware_concurrency();
+        return (hw > 0) ? hw : 1;
+    }
+
+    unsigned int getThreadWorkerConsigliati() const {
+        unsigned int hw = getThreadHardware();
+        if (hw <= 2) return 1;
+        return std::min(hw / 2, 4u); // Usa al massimo metà CPU (tetto 4) per non bloccare SO/UI
+    }
 
     void setOrchestrator(HammerOrchestrator* nuovoOrchestrator) {
         orchestrator.store(nuovoOrchestrator, std::memory_order_release);

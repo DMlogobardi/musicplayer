@@ -55,6 +55,7 @@ class HammerOrchestrator {
 
         std::vector<uint8_t> tasti_premuti; // Array per tenere traccia dei tasti premuti
         float profondita_pedale = 0.0f;     // Corsa continua pedale di risonanza [0.0 ... 1.0]
+        float pedale_smooth = 0.0f;         // Inviluppo a un polo continuo anti-click [0.0 ... 1.0]
         bool sustain_pedal_down = false;
 
         LockFreeQueue<EventoAudio> coda_eventi;
@@ -110,12 +111,9 @@ class HammerOrchestrator {
             void reset() { z1 = 0.0f; z2 = 0.0f; }
         };
 
-        Biquad soundboard_low_L, soundboard_low_R;
-        Biquad soundboard_high_L, soundboard_high_R;
-        std::vector<float> soundboard_diff_buffer_L;
-        std::vector<float> soundboard_diff_buffer_R;
-        size_t diff_idx = 0;
-        size_t diff_delay = 66;
+        Biquad soundboard_bass_L, soundboard_bass_R; // Risonanza profonda cassa (130 Hz)
+        Biquad soundboard_body_L, soundboard_body_R; // Risonanza corpo legno (280 Hz - calore medio)
+        Biquad soundboard_high_L, soundboard_high_R; // Assorbimento naturale aria (8500 Hz)
 
         void inizializzaTavolaArmonica(int sampleRate);
         void applicaTavolaArmonica(float& inL, float& inR);

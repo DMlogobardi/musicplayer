@@ -29,8 +29,10 @@ AudioDeviceManager::AudioDeviceManager(HammerOrchestrator* orchestratore)
 }
 
 AudioDeviceManager::~AudioDeviceManager() {
-    try { fermaStream(); } catch (...) {
-        auto logError("Errore durante la chiusura dello stream audio nel distruttore di AudioDeviceManager.");
+    try { 
+        fermaStream(); 
+    } catch (...) {
+        // Distruzione silenziosa sicura e noexcept per non propagare eccezioni
     }
 }
 

@@ -1,12 +1,6 @@
 AGENTS.md
-AudioDeviceManager.o
-PianoTest.exe
-test_engine.exe
-PianoTest.exe
-PianoTest.exe
-WindowsAudioDriver.o
-fisica/Formulario_Fisica_RealTime.pdf
-fisica/genera_documento_fisica.py
-canzone_test_20s.wav
-vechiTestWav/test_motore_fisico.wav
-vechiTestWav/demo_pianoforte_lungo.wav
+*.wav
+*.exe
+*.o
+*.pdf
+*.py

@@ -1,4 +1,7 @@
 #include "OboeAudioDriver.hpp"
+
+#if defined(__ANDROID__)
+
 #include "AudioDeviceManager.hpp"
 #include <cstring>
 
@@ -14,6 +17,8 @@ bool OboeAudioDriver::inizializza() {
     oboe::AudioStreamBuilder builder;
     builder.setDirection(oboe::Direction::Output)
            ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
+           ->setUsage(oboe::Usage::Game)
+           ->setContentType(oboe::ContentType::Music)
            ->setFormat(oboe::AudioFormat::Float)
            ->setChannelCount(2)
            ->setDataCallback(this)
@@ -33,9 +38,9 @@ bool OboeAudioDriver::inizializza() {
         return false;
     }
 
-    // Configura la dimensione del buffer pari al burst hardware per evitare sgranature (underrun)
+    // Doppio burst (2x) come raccomandato da Google Oboe per evitare underrun senza sacrificare la latenza
     int32_t burstFrames = stream->getFramesPerBurst();
-    stream->setBufferSizeInFrames(burstFrames);
+    stream->setBufferSizeInFrames(burstFrames * 2);
 
     // Salva i parametri reali negoziali con l'hardware
     sampleRate = stream->getSampleRate();
@@ -88,3 +93,5 @@ void OboeAudioDriver::onErrorAfterClose(oboe::AudioStream* /*oboeStream*/, oboe:
         // Notifica o ri-inizializzazione opzionale se le cuffie o la scheda audio vengono staccate
     }
 }
+
+#endif // __ANDROID__

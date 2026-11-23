@@ -40,6 +40,7 @@ public:
 
 private:
     AudioDeviceManager* manager = nullptr;
+    std::shared_ptr<oboe::AudioStream> stream;
     std::atomic<bool> attivo{false};
     int sampleRate = 0;
     int bufferSize = 0;
