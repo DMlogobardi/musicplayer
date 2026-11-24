@@ -4,3 +4,6 @@ AGENTS.md
 *.o
 *.pdf
 *.py
+FLUTTER_INTEGRATION_GUIDE.md
+*.bin
+*.dll

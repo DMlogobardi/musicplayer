@@ -71,6 +71,8 @@ private:
 
     float filtro_smorzatore_stato = 0.0f;
     float alpha_smorzatore = 0.0f;
+    float micro_rumore_feltro = 0.0f;
+    float decay_rumore_feltro = 0.998f;
     bool smorzamento_ribattuto = false;
     bool attacco_da_ribattuto = false; // true solo se il Note-On interrompe una voce già attiva
 };

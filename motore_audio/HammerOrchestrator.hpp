@@ -69,28 +69,65 @@ class HammerOrchestrator {
         void aggiungiVoceAttiva(size_t index);
         void rimuoviVoceAttiva(size_t index);
 
-        // --- Task 6: Risonanza Simpatica tra Corde Libere (Ponticello / Sympathetic String Bus) ---
+        // --- Task 6: Risonanza Simpatica Multimodale (Fondamentale + 2°/3° Armonico) ---
         struct RisonatoreSimpatia {
-            double c1 = 0.0;
-            double c2 = 0.0;
-            double g = 0.0;
-            double y1 = 0.0;
-            double y2 = 0.0;
+            // Modo 1 (f0)
+            double c1_1 = 0.0, c2_1 = 0.0, g_1 = 0.0;
+            double y1_1 = 0.0, y2_1 = 0.0;
+            // Modo 2 (2*f0 - ottava)
+            double c1_2 = 0.0, c2_2 = 0.0, g_2 = 0.0;
+            double y1_2 = 0.0, y2_2 = 0.0;
+            // Modo 3 (3*f0 - dodicesima)
+            double c1_3 = 0.0, c2_3 = 0.0, g_3 = 0.0;
+            double y1_3 = 0.0, y2_3 = 0.0;
+
             float guadagno_L = 0.707f;
             float guadagno_R = 0.707f;
 
             float processa(float in) {
-                double out = c1 * y1 - c2 * y2 + g * static_cast<double>(in);
-                y2 = y1;
-                y1 = out;
-                if (std::abs(y1) < 1e-15) y1 = 0.0;
-                if (std::abs(y2) < 1e-15) y2 = 0.0;
-                return static_cast<float>(out);
+                double d_in = static_cast<double>(in);
+                double out1 = c1_1 * y1_1 - c2_1 * y2_1 + g_1 * d_in;
+                y2_1 = y1_1; y1_1 = out1;
+                if (std::abs(y1_1) < 1e-15) y1_1 = 0.0;
+                if (std::abs(y2_1) < 1e-15) y2_1 = 0.0;
+
+                double out2 = c1_2 * y1_2 - c2_2 * y2_2 + g_2 * d_in;
+                y2_2 = y1_2; y1_2 = out2;
+                if (std::abs(y1_2) < 1e-15) y1_2 = 0.0;
+                if (std::abs(y2_2) < 1e-15) y2_2 = 0.0;
+
+                double out3 = c1_3 * y1_3 - c2_3 * y2_3 + g_3 * d_in;
+                y2_3 = y1_3; y1_3 = out3;
+                if (std::abs(y1_3) < 1e-15) y1_3 = 0.0;
+                if (std::abs(y2_3) < 1e-15) y2_3 = 0.0;
+
+                return static_cast<float>(out1 + out2 + out3);
             }
-            void reset() { y1 = 0.0; y2 = 0.0; }
+            void attenua() {
+                y1_1 *= 0.95; y2_1 *= 0.95;
+                y1_2 *= 0.95; y2_2 *= 0.95;
+                y1_3 *= 0.95; y2_3 *= 0.95;
+                if (std::abs(y1_1) < 1e-15 && std::abs(y1_2) < 1e-15 && std::abs(y1_3) < 1e-15) reset();
+            }
+            void dissipa() {
+                y1_1 *= 0.9999; y2_1 *= 0.9999;
+                y1_2 *= 0.9999; y2_2 *= 0.9999;
+                y1_3 *= 0.9999; y2_3 *= 0.9999;
+            }
+            bool isAttivo() const {
+                return (y1_1 != 0.0 || y1_2 != 0.0 || y1_3 != 0.0);
+            }
+            void reset() {
+                y1_1 = y2_1 = 0.0;
+                y1_2 = y2_2 = 0.0;
+                y1_3 = y2_3 = 0.0;
+            }
         };
 
         std::vector<RisonatoreSimpatia> risonatori_simpatia;
+        // Memoria di stato per Anti-Derivative Anti-Aliasing (ADAA) del ponte
+        float adaa_bridge_x1 = 0.0f;
+        float adaa_bridge_F1 = 1.0f;
         void inizializzaRisonanzaSimpatica(int sampleRate);
         void applicaRisonanzaSimpatica(float inBridge, float& outL, float& outR);
 
@@ -111,12 +148,33 @@ class HammerOrchestrator {
             void reset() { z1 = 0.0f; z2 = 0.0f; }
         };
 
-        Biquad soundboard_bass_L, soundboard_bass_R; // Risonanza profonda cassa (130 Hz)
+        Biquad soundboard_bass_L, soundboard_bass_R; // Risonanza profonda cassa (125 Hz)
         Biquad soundboard_body_L, soundboard_body_R; // Risonanza corpo legno (280 Hz - calore medio)
+        Biquad soundboard_presence_L, soundboard_presence_R; // Presenza ponte e legno (2100 Hz - proiezione)
         Biquad soundboard_high_L, soundboard_high_R; // Assorbimento naturale aria (8500 Hz)
 
         void inizializzaTavolaArmonica(int sampleRate);
         void applicaTavolaArmonica(float& inL, float& inR);
+
+        // --- Modello Meccanico Rumore Pedaliera & Feltri Smorzatori ---
+        struct ModelloMeccanicaPedale {
+            float pedale_precedente = 0.0f;
+            Biquad whoosh_L, whoosh_R; // Filtro passa-banda sollevamento feltri (1400 Hz)
+            Biquad thud_L, thud_R;     // Filtro passa-basso ricaduta feltri (135 Hz)
+            float env_whoosh = 0.0f;
+            float decay_whoosh = 0.9993f;
+            float env_thud = 0.0f;
+            float decay_thud = 0.9986f;
+            uint32_t prng_state = 123456789;
+
+            inline float rumoreUniforme() {
+                prng_state = prng_state * 1664525u + 1013904223u;
+                return static_cast<float>(static_cast<int32_t>(prng_state)) * 4.6566129e-10f;
+            }
+            void configura(int sampleRate);
+            void aggiorna(float nuovaProfondita, int sampleRate);
+            void processa(float& outL, float& outR);
+        } meccanica_pedale;
 };
 
 #endif // HAMMERORCHESTRATOR_HPP

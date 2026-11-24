@@ -79,6 +79,7 @@ void Martelletto::reset() {
     livello = 0.0f;
     filtro_smorzatore_stato = 0.0f;
     alpha_smorzatore = 0.0f;
+    micro_rumore_feltro = 0.0f;
     smorzamento_ribattuto = false;
     attacco_da_ribattuto = false;
 }
@@ -171,6 +172,7 @@ void Martelletto::colpisci(size_t idxNota, const NotaData* nota, float velocity)
     indice_lettura = 0; 
     filtro_smorzatore_stato = 0.0f;
     alpha_smorzatore = 0.0f;
+    micro_rumore_feltro = 0.0f;
     smorzamento_ribattuto = false;
 }
 
@@ -213,6 +215,10 @@ void Martelletto::rilascia(float releaseVelocity, float profonditaPedale) {
     float fc = std::clamp(f * 4.5f + 400.0f, 600.0f, 9000.0f);
     float w = 2.0f * static_cast<float>(M_PI) * fc / static_cast<float>(sample_rate);
     alpha_smorzatore = std::exp(-w);
+
+    // Micro-attrito elastico del feltro dello smorzatore che si appoggia sulla corda in vibrazione
+    micro_rumore_feltro = 0.007f * v_rel * std::min(1.0f, livello);
+    decay_rumore_feltro = std::exp(-1.0f / (0.018f * static_cast<float>(sample_rate))); // decade in ~18 ms
 
     smorzamento_ribattuto = false;
     stato = StatoMartelletto::IN_SMORZAMENTO;
@@ -294,6 +300,13 @@ float Martelletto::suona() {
                 filtro_smorzatore_stato = 0.0f;
             }
             campione_processato = filtro_smorzatore_stato;
+        }
+
+        // Micro-attrito anelastico di feltro dello smorzatore sulla corda
+        if (micro_rumore_feltro > 1e-6f) {
+            float perturbazione = (filtro_smorzatore_stato >= 0.0f ? 1.0f : -1.0f) * micro_rumore_feltro;
+            campione_processato += perturbazione;
+            micro_rumore_feltro *= decay_rumore_feltro;
         }
     } else {
         // Mantiene la memoria del filtro allineata al campione corrente per evitare salti di fase

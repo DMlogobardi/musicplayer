@@ -151,8 +151,7 @@ void Testina::sintetizzaLayerFasori(float f0,
         double polaritaModale = (s_k >= 0.0) ? 1.0 : -1.0;
         double ampiezzaSpaziale = std::max(std::abs(s_k), 0.04);
 
-        // B. Trasformata di Fourier dell'impulso non lineare di forza del martelletto (Hall / Suzuki)
-        // H_H(f) = |cos(pi*f*tc) / (1 - (2*f*tc)^2)|
+        // B. Trasformata dell'impulso martelletto con Isteresi Viscoelastica del Feltro (Stulov / Suzuki)
         double x_tc = 2.0 * freqParziale * tc;
         double denom_tc = 1.0 - x_tc * x_tc;
         double h_hammer;
@@ -161,10 +160,19 @@ void Testina::sintetizzaLayerFasori(float f0,
         } else {
             h_hammer = M_PI * 0.25; // Limite continuo per x_tc -> 1
         }
-        h_hammer = std::pow(std::clamp(h_hammer, 0.001, 1.2), 0.85);
+        // Termine di asimmetria isteretica del feltro: rinforza il mordente percussivo a velocity elevate
+        double eta_hyst = 0.40 * std::pow(v_norm, 0.35);
+        double boost_isteresi = 1.0 + eta_hyst * (x_tc / (1.0 + x_tc));
+        h_hammer = std::pow(std::clamp(h_hammer * boost_isteresi, 0.001, 1.5), 0.85);
 
-        // C. Spettro armonico integrato
+        // C. Spettro armonico integrato con termine non lineare di tensione (Phantom Partials k=2..6)
         double ampiezzaK = (1.0 / static_cast<double>(k)) * ampiezzaSpaziale * h_hammer;
+
+        // Rinforzo non lineare armonico da auto-modulazione di tensione (Conklin / Bilbao)
+        if (k >= 2 && k <= 6) {
+            double phantom_coupling = 0.18 * std::pow(v_norm, 1.8) * (150.0 / (static_cast<double>(f0) + 120.0));
+            ampiezzaK += phantom_coupling * ampiezzaSpaziale / static_cast<double>(k);
+        }
 
         // Rinforzo calore armonico registro cantabile
         if (k >= 2 && k <= 5) {
@@ -200,16 +208,19 @@ void Testina::sintetizzaLayerFasori(float f0,
             double ampPrompt = quotaPrompt * ampiezzaK * ampiezzaCorda;
             double ampAfter  = quotaAfter  * ampiezzaK * ampiezzaCorda;
 
-            // Fase d'onda fisica con spostamento iniziale nullo y(0) = 0 (onda sinusoidale).
-            // Elimina il salto cosinusoidale istantaneo al campione zero e fonde
-            // perfettamente l'attacco della corda con il colpo del martelletto.
-            f.re_p = 0.0;
-            f.im_p = -ampPrompt * polaritaModale;
+            // Dispersione di fase elastica d'impatto (Chaigne-Askenfelt):
+            // La fondamentale k=1 parte con spostamento nullo y(0)=0.
+            // Le armoniche superiori curvano dolcemente la fase iniziale per dispersione d'onda flessionale:
+            double theta_k = (k == 1) ? 0.0 : (0.35 * std::tanh(0.28 * static_cast<double>(k - 1)));
+            double cos_th = std::cos(theta_k);
+            double sin_th = std::sin(theta_k);
 
-            // Modo ortogonale aftersound a spostamento nullo iniziale:
-            // l'energia orizzontale cresce per accoppiamento dinamico progressivo
-            f.re_a = 0.0;
-            f.im_a = -ampAfter * polaritaModale;
+            f.re_p = -ampPrompt * polaritaModale * sin_th;
+            f.im_p = -ampPrompt * polaritaModale * cos_th;
+
+            // Modo ortogonale aftersound: orientato con leggera rotazione di polarizzazione
+            f.re_a = -ampAfter * polaritaModale * sin_th;
+            f.im_a = -ampAfter * polaritaModale * cos_th;
 
             fasori.push_back(f);
         }
@@ -285,17 +296,30 @@ void Testina::sintetizzaLayerFasori(float f0,
         knock_env *= decay_knock;
     }
 
-    // 2. Felt Chiff: compressione pura della lana (senza rumore bianco sintetico, solo nei registri medio-gravi)
-    if (f0 < 600.0f) {
-        size_t campioniChiff = std::min(totaleCampioni, static_cast<size_t>(0.0035 * fs));
-        double f1_chiff = 2100.0 + 0.30 * static_cast<double>(f0);
-        double f2_chiff = f1_chiff * 1.61803398875; // Rapporto aureo anarmonico: disperde energia e previene risonanze tonali
+    // 2. Felt Chiff: attrito dinamico della lana e transiente percussivo (adattivo su tutti i registri)
+    {
+        double f1_chiff, decay_rate, chiff_amp;
+        size_t durata_samples;
+        if (f0 < 600.0f) {
+            durata_samples = static_cast<size_t>(0.0035 * fs);
+            f1_chiff = 2100.0 + 0.30 * static_cast<double>(f0);
+            decay_rate = 1050.0;
+            chiff_amp = 0.011 * std::pow(v_norm, 1.6) * ampiezzaCorda;
+        } else {
+            // Negli acuti il feltro è sottilissimo e compresso: transiente percussivo secco e cristallino
+            durata_samples = static_cast<size_t>(0.0015 * fs);
+            f1_chiff = std::clamp(2800.0 + 1.10 * static_cast<double>(f0), 3500.0, 5800.0);
+            decay_rate = 2600.0; // Decade in ~1.2 ms
+            chiff_amp = 0.018 * std::pow(v_norm, 1.35) * ampiezzaCorda;
+        }
+
+        size_t campioniChiff = std::min(totaleCampioni, durata_samples);
+        double f2_chiff = f1_chiff * 1.61803398875; // Rapporto aureo anarmonico
         double omega1 = 2.0 * M_PI * f1_chiff / fs;
         double omega2 = 2.0 * M_PI * f2_chiff / fs;
-        double decay_chiff = std::exp(-1050.0 / fs);
-        double chiff_amp = 0.011 * std::pow(v_norm, 1.6) * ampiezzaCorda;
+        double decay_chiff = std::exp(-decay_rate / fs);
         double chiff_env = chiff_amp;
-        size_t campioniFadeChiff = static_cast<size_t>(0.001 * fs);
+        size_t campioniFadeChiff = static_cast<size_t>(0.0006 * fs);
 
         for (size_t n = 0; n < campioniChiff; ++n) {
             double finestraChiff = 1.0;
@@ -308,6 +332,33 @@ void Testina::sintetizzaLayerFasori(float f0,
             double chiff_sample = chiff_env * finestraChiff * s_anarmonico;
             bufferUscita[n] += static_cast<float>(chiff_sample);
             chiff_env *= decay_chiff;
+        }
+    }
+
+    // 3. Modi Longitudinali delle corde avvolte (Piano Growl / Ringhio metallico nobile nei bassi f0 < 350 Hz)
+    // Conklin (1996) / Giordano: onde di compressione longitudinali nel filo d'acciaio/rame
+    if (f0 < 350.0f) {
+        double f_long = static_cast<double>(f0) * (12.0 + 8.0 * (100.0 / (static_cast<double>(f0) + 60.0)));
+        f_long = std::clamp(f_long, 450.0, 2100.0);
+        double omega_long = 2.0 * M_PI * f_long / fs;
+        double omega_long2 = omega_long * 1.88;
+        double decay_long = std::exp(-28.0 / fs); // Decade naturalmente in ~70-90 ms
+        size_t campioniLong = std::min(totaleCampioni, static_cast<size_t>(0.085 * fs));
+        double pesoRegistroGrave = std::clamp((350.0 - static_cast<double>(f0)) / 280.0, 0.0, 1.0);
+        double long_amp = 0.022 * std::pow(v_norm, 1.85) * ampiezzaCorda * pesoRegistroGrave;
+        double long_env = long_amp;
+        size_t campioniFadeLong = static_cast<size_t>(0.015 * fs);
+
+        for (size_t n = 0; n < campioniLong; ++n) {
+            double finestraLong = 1.0;
+            if (n + campioniFadeLong >= campioniLong) {
+                double rest = static_cast<double>(campioniLong - 1 - n) / static_cast<double>(campioniFadeLong);
+                finestraLong = 0.5 * (1.0 - std::cos(rest * M_PI));
+            }
+            double s_long = 0.70 * std::sin(static_cast<double>(n) * omega_long) + 
+                            0.30 * std::sin(static_cast<double>(n) * omega_long2);
+            bufferUscita[n] += static_cast<float>(long_env * finestraLong * s_long);
+            long_env *= decay_long;
         }
     }
 

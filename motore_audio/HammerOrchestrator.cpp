@@ -60,6 +60,78 @@ HammerOrchestrator::HammerOrchestrator(std::shared_ptr<const Dischetto> dischett
 
         inizializzaTavolaArmonica(sampleRateStream);
         inizializzaRisonanzaSimpatica(sampleRateStream);
+        meccanica_pedale.configura(sampleRateStream);
+}
+
+void HammerOrchestrator::ModelloMeccanicaPedale::configura(int sampleRate) {
+    auto progettaBP = [sampleRate](float f0, float Q, Biquad& bL, Biquad& bR) {
+        float w0 = 2.0f * static_cast<float>(M_PI) * f0 / static_cast<float>(sampleRate);
+        float alpha = std::sin(w0) / (2.0f * Q);
+        float b0 = alpha;
+        float b1 = 0.0f;
+        float b2 = -alpha;
+        float a0 = 1.0f + alpha;
+        float a1 = -2.0f * std::cos(w0);
+        float a2 = 1.0f - alpha;
+        bL.b0 = bR.b0 = b0 / a0;
+        bL.b1 = bR.b1 = b1 / a0;
+        bL.b2 = bR.b2 = b2 / a0;
+        bL.a1 = bR.a1 = a1 / a0;
+        bL.a2 = bR.a2 = a2 / a0;
+    };
+
+    auto progettaLP = [sampleRate](float f0, float Q, Biquad& bL, Biquad& bR) {
+        float w0 = 2.0f * static_cast<float>(M_PI) * f0 / static_cast<float>(sampleRate);
+        float alpha = std::sin(w0) / (2.0f * Q);
+        float cos_w = std::cos(w0);
+        float b0 = (1.0f - cos_w) * 0.5f;
+        float b1 = 1.0f - cos_w;
+        float b2 = (1.0f - cos_w) * 0.5f;
+        float a0 = 1.0f + alpha;
+        float a1 = -2.0f * cos_w;
+        float a2 = 1.0f - alpha;
+        bL.b0 = bR.b0 = b0 / a0;
+        bL.b1 = bR.b1 = b1 / a0;
+        bL.b2 = bR.b2 = b2 / a0;
+        bL.a1 = bR.a1 = a1 / a0;
+        bL.a2 = bR.a2 = a2 / a0;
+    };
+
+    progettaBP(1400.0f, 0.75f, whoosh_L, whoosh_R); // Soffio feltro a 1400 Hz
+    progettaLP(135.0f, 1.3f, thud_L, thud_R);       // Impatto sordo cassa a 135 Hz
+    decay_whoosh = std::exp(-1.0f / (0.13f * static_cast<float>(sampleRate)));
+    decay_thud = std::exp(-1.0f / (0.075f * static_cast<float>(sampleRate)));
+}
+
+void HammerOrchestrator::ModelloMeccanicaPedale::aggiorna(float nuovaProfondita, int sampleRate) {
+    float delta = nuovaProfondita - pedale_precedente;
+    if (delta > 0.005f) {
+        // Il pedale si abbassa: sollevamento dei feltri dalle corde (Whoosh)
+        float imp = std::min(0.022f, 0.055f * delta);
+        env_whoosh = std::min(0.025f, env_whoosh + imp);
+    } else if (delta < -0.008f && nuovaProfondita < 0.25f) {
+        // Il pedale si alza e tocca il fondo: ricaduta dei feltri sulla cassa (Thud)
+        float imp = std::min(0.030f, 0.075f * (-delta));
+        env_thud = std::min(0.035f, env_thud + imp);
+    }
+    pedale_precedente = nuovaProfondita;
+}
+
+void HammerOrchestrator::ModelloMeccanicaPedale::processa(float& outL, float& outR) {
+    if (env_whoosh > 1e-6f) {
+        float rL = rumoreUniforme();
+        float rR = rumoreUniforme();
+        outL += whoosh_L.processa(rL * env_whoosh);
+        outR += whoosh_R.processa(rR * env_whoosh);
+        env_whoosh *= decay_whoosh;
+    }
+    if (env_thud > 1e-6f) {
+        float rL = rumoreUniforme();
+        float rR = rumoreUniforme();
+        outL += thud_L.processa(rL * env_thud);
+        outR += thud_R.processa(rR * env_thud);
+        env_thud *= decay_thud;
+    }
 }
 
 void HammerOrchestrator::inizializzaTavolaArmonica(int sampleRate) {
@@ -82,13 +154,16 @@ void HammerOrchestrator::inizializzaTavolaArmonica(int sampleRate) {
         bL.a2 = bR.a2 = a2 / a0;
     };
 
-    // 1. Risonatore profondo cassa (130 Hz, Q=1.2, Gain=+2.5 dB)
-    progettaPeaking(130.0f, 1.2f, 2.5f, soundboard_bass_L, soundboard_bass_R);
+    // 1. Risonatore profondo cassa (125 Hz, Q=1.1, Gain=+1.8 dB)
+    progettaPeaking(125.0f, 1.1f, 1.8f, soundboard_bass_L, soundboard_bass_R);
 
-    // 2. Calore corpo ligneo abete (280 Hz, Q=1.0, Gain=+2.5 dB - corpo pieno e vellutato)
-    progettaPeaking(280.0f, 1.0f, 2.5f, soundboard_body_L, soundboard_body_R);
+    // 2. Calore corpo ligneo abete (280 Hz, Q=1.0, Gain=+1.4 dB - calore nobile senza gonfiare)
+    progettaPeaking(280.0f, 1.0f, 1.4f, soundboard_body_L, soundboard_body_R);
 
-    // 3. Assorbimento acustico naturale dell'aria (8500 Hz, Q=0.65)
+    // 3. Presenza e proiezione del ponte di faggio/acero (2100 Hz, Q=1.2, Gain=+1.3 dB - mordente acustico)
+    progettaPeaking(2100.0f, 1.2f, 1.3f, soundboard_presence_L, soundboard_presence_R);
+
+    // 4. Assorbimento acustico naturale dell'aria (8500 Hz, Q=0.65)
     float fc_h = 8500.0f;
     float w_h = 2.0f * static_cast<float>(M_PI) * fc_h / static_cast<float>(sampleRate);
     float alpha_h = std::sin(w_h) / (2.0f * 0.65f);
@@ -109,9 +184,20 @@ void HammerOrchestrator::inizializzaTavolaArmonica(int sampleRate) {
 }
 
 void HammerOrchestrator::applicaTavolaArmonica(float& inL, float& inR) {
-    // Elaborazione IIR a zero delay: calore di cassa profondo (130 Hz) + corpo ligneo (280 Hz) + aria (8500 Hz)
-    inL = soundboard_high_L.processa(soundboard_body_L.processa(soundboard_bass_L.processa(inL)));
-    inR = soundboard_high_R.processa(soundboard_body_R.processa(soundboard_bass_R.processa(inR)));
+    // Cascata Biquad: Cassa profonda (125 Hz) -> Corpo (280 Hz) -> Presenza ponte (2100 Hz) -> Assorbimento aria (8500 Hz)
+    // Scalatura a 0.78 (-2.15 dB) per mantenere il guadagno RMS integrato a 0 dB unitario,
+    // preservando l'headroom ed eliminando la saturazione cronica del limiter!
+    constexpr float GAIN_CORREZIONE_TAVOLA = 0.78f;
+
+    inL = soundboard_high_L.processa(
+            soundboard_presence_L.processa(
+                soundboard_body_L.processa(
+                    soundboard_bass_L.processa(inL)))) * GAIN_CORREZIONE_TAVOLA;
+
+    inR = soundboard_high_R.processa(
+            soundboard_presence_R.processa(
+                soundboard_body_R.processa(
+                    soundboard_bass_R.processa(inR)))) * GAIN_CORREZIONE_TAVOLA;
 }
 
 void HammerOrchestrator::inizializzaRisonanzaSimpatica(int sampleRate) {
@@ -130,16 +216,28 @@ void HammerOrchestrator::inizializzaRisonanzaSimpatica(int sampleRate) {
     double fattoreScalaN = 12.0 / static_cast<double>(nPerOttava);
     double kappa_bridge = 0.030 * fattoreScalaN; // Guadagno di picco normalizzato ad energia costante su qualsiasi scala
 
+    const double nyquist_sym = 0.45 * static_cast<double>(sampleRate);
     for (size_t i = 0; i < numNote; ++i) {
         const NotaData* n = dischetto_riferimento->getNota(i);
         if (n == nullptr || n->frequenza <= 0.0f) continue;
 
-        double w0 = 2.0 * M_PI * static_cast<double>(n->frequenza) / static_cast<double>(sampleRate);
-        // Normalizzazione esatta per ottenere |H(e^{j*w0})| = kappa_bridge a qualsiasi frequenza
-        double norm_picco = (1.0 - r) * std::sqrt(std::max(1e-12, 1.0 - 2.0 * r * std::cos(2.0 * w0) + c2));
-        risonatori_simpatia[i].c1 = 2.0 * r * std::cos(w0);
-        risonatori_simpatia[i].c2 = c2;
-        risonatori_simpatia[i].g = norm_picco * kappa_bridge;
+        auto configuraModo = [&](double f_harm, double peso, double& c1_out, double& c2_out, double& g_out) {
+            if (f_harm >= nyquist_sym) {
+                c1_out = c2_out = g_out = 0.0;
+                return;
+            }
+            double w = 2.0 * M_PI * f_harm / static_cast<double>(sampleRate);
+            double norm = (1.0 - r) * std::sqrt(std::max(1e-12, 1.0 - 2.0 * r * std::cos(2.0 * w) + c2));
+            c1_out = 2.0 * r * std::cos(w);
+            c2_out = c2;
+            g_out = norm * kappa_bridge * peso;
+        };
+
+        double f0 = static_cast<double>(n->frequenza);
+        configuraModo(f0,       1.00, risonatori_simpatia[i].c1_1, risonatori_simpatia[i].c2_1, risonatori_simpatia[i].g_1);
+        configuraModo(f0 * 2.0, 0.45, risonatori_simpatia[i].c1_2, risonatori_simpatia[i].c2_2, risonatori_simpatia[i].g_2);
+        configuraModo(f0 * 3.0, 0.22, risonatori_simpatia[i].c1_3, risonatori_simpatia[i].c2_3, risonatori_simpatia[i].g_3);
+
         risonatori_simpatia[i].guadagno_L = n->guadagno_L;
         risonatori_simpatia[i].guadagno_R = n->guadagno_R;
         risonatori_simpatia[i].reset();
@@ -163,10 +261,8 @@ void HammerOrchestrator::applicaRisonanzaSimpatica(float inBridge, float& outL, 
 
         if (!smorzatoreAlzato) {
             // Smorzatore a contatto: il feltro dissipa dolcemente l'energia residua del risonatore
-            if (risonatori_simpatia[i].y1 != 0.0f) {
-                risonatori_simpatia[i].y1 *= 0.95f;
-                risonatori_simpatia[i].y2 *= 0.95f;
-                if (std::abs(risonatori_simpatia[i].y1) < 1e-15f) risonatori_simpatia[i].reset();
+            if (risonatori_simpatia[i].isAttivo()) {
+                risonatori_simpatia[i].attenua();
             }
             continue;
         }
@@ -181,8 +277,7 @@ void HammerOrchestrator::applicaRisonanzaSimpatica(float inBridge, float& outL, 
         }
 
         if (direttamenteAttiva) {
-            risonatori_simpatia[i].y1 *= 0.9999f;
-            risonatori_simpatia[i].y2 *= 0.9999f;
+            risonatori_simpatia[i].dissipa();
             continue;
         }
 
@@ -321,6 +416,7 @@ void HammerOrchestrator::eseguiNoteOffInterno(size_t indiceNota, float releaseVe
 void HammerOrchestrator::eseguiSustainPedalInterno(float profondita) {
     profondita_pedale = std::clamp(profondita, 0.0f, 1.0f);
     sustain_pedal_down = (profondita_pedale > 0.5f);
+    meccanica_pedale.aggiorna(profondita_pedale, sample_rate);
 
     if (profondita_pedale >= 0.85f) {
         // PEDALE A FONDO: Re-pedaling (Catch pedal su note in smorzamento naturale)
@@ -400,10 +496,26 @@ void HammerOrchestrator::suonaCampioneStereo(float& outL, float& outR) {
     constexpr float alpha_p = 0.0025f;
     pedale_smooth += alpha_p * (profondita_pedale - pedale_smooth);
 
-    // --- RISONANZA SIMPATICA TRA CORDE LIBERE (Task 6) ---
-    // Il ponticello trasmette la vibrazione delle corde attive alle altre corde con feltri alzati
-    float inBridge = (somma_L + somma_R) * 0.5f;
-    applicaRisonanzaSimpatica(inBridge, somma_L, somma_R);
+    // --- RISONANZA SIMPATICA E INTERAZIONE NON LINEARE DEL PONTICELLO CON ADAA ---
+    // ADAA di 1° ordine sulla saturazione del legno del ponte: f(x) = x / sqrt(1 + x^2)
+    // Antiderivata analitica esatta: F1(x) = sqrt(1 + x^2)
+    float inBridgeLin = (somma_L + somma_R) * 0.5f;
+    float x_curr = inBridgeLin * 1.25f;
+    float F1_curr = std::sqrt(1.0f + x_curr * x_curr);
+    float delta_x = x_curr - adaa_bridge_x1;
+    float inBridgeNL;
+    if (std::abs(delta_x) > 1e-5f) {
+        inBridgeNL = (F1_curr - adaa_bridge_F1) / delta_x;
+    } else {
+        float x_mid = 0.5f * (x_curr + adaa_bridge_x1);
+        inBridgeNL = x_mid / std::sqrt(1.0f + x_mid * x_mid);
+    }
+    adaa_bridge_x1 = x_curr;
+    adaa_bridge_F1 = F1_curr;
+    applicaRisonanzaSimpatica(inBridgeNL, somma_L, somma_R);
+
+    // Iniezione del respiro meccanico della pedaliera (Lift Whoosh & Drop Thud)
+    meccanica_pedale.processa(somma_L, somma_R);
 
     // --- STADIO TAVOLA ARMONICA MASTER (Task 7) ---
     // Fa risuonare la cassa di abete rosso prima del limiting finale
